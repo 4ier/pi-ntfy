@@ -40,19 +40,35 @@ jobs:
       - name: Smoke-load the extension entry under plain Node
         run: |
           npx tsc -p tsconfig.json --noEmit false --outDir .tmp-build --rootDir .
-          node -e "
-          import('./.tmp-build/src/index.js').then((m) => {
-            if (typeof m.default !== 'function') { throw new Error('default export is not a function'); }
-            const handlers = {}, commands = {};
-            m.default({ on: (n, h) => { handlers[n] = h; }, registerCommand: (n, d) => { commands[n] = d; },
-                        sendMessage() {}, sendUserMessage() {}, appendEntry() {},
-                        events: { on() {}, emit() {} } });
-            if (!handlers.session_start) { throw new Error('session_start not registered'); }
-            if (!commands.ntfy) { throw new Error('ntfy command not registered'); }
-            console.log('smoke load ok');
-          }).catch((e) => { console.error(e); process.exit(1); });
-          "
-          rm -rf .tmp-build
+          cat > .smoke.mjs <<'SMOKE'
+          const mod = await import('./.tmp-build/src/index.js');
+          if (typeof mod.default !== 'function') throw new Error('default export is not a function');
+
+          const handlers = {}, commands = {}, tools = {};
+          const noop = () => {};
+          // A Proxy, not a hand-written stub: the factory grows new pi APIs over time and a
+          // fixed stub turns every such addition into a red CI run that has nothing to do
+          // with the change. We still record the registrations worth asserting on.
+          const target = {
+            on: (name, handler) => { handlers[name] = handler; },
+            registerCommand: (name, definition) => { commands[name] = definition; },
+            registerTool: (tool) => { tools[tool?.name ?? '?'] = tool; },
+            events: { on: noop, emit: noop },
+            appendEntry: noop,
+          };
+          const api = new Proxy(target, {
+            get: (obj, prop) => (prop in obj ? obj[prop] : noop),
+          });
+
+          mod.default(api);
+
+          if (!handlers.session_start) throw new Error('session_start not registered');
+          if (!handlers.session_shutdown) throw new Error('session_shutdown not registered');
+          if (!commands.ntfy) throw new Error('ntfy command not registered');
+          console.log('smoke load ok; tools: ' + Object.keys(tools).join(',') + '; commands: ' + Object.keys(commands).join(','));
+          SMOKE
+          node .smoke.mjs
+          rm -rf .tmp-build .smoke.mjs
 
       - name: Check the published artifact actually contains the extension
         run: |
