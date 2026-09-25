@@ -34,6 +34,18 @@ function okResponse(parts: string[]): Response {
 	return new Response(streamOf(parts), { status: 200 });
 }
 
+/** A 200 whose body rejects mid-read — how a network reset/aborted socket surfaces. */
+function resetResponse(): Response {
+	return new Response(
+		new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.error(new Error("ECONNRESET"));
+			},
+		}),
+		{ status: 200 },
+	);
+}
+
 describe("parseNdjsonLine", () => {
 	it("parses a JSON object", () => {
 		expect(parseNdjsonLine('{"event":"open"}')).toEqual({ event: "open" });
@@ -334,6 +346,9 @@ describe("subscribe", () => {
 			signal: controller.signal,
 			onMessage: () => undefined,
 			fetchImpl: (async () => okResponse([])) as typeof fetch,
+			// A frozen clock keeps the "immediate close" case deterministic instead of
+			// depending on the test process not stalling for 30s.
+			now: () => 0,
 			sleep: async (ms) => {
 				delays.push(ms);
 				if (delays.length >= 3) {
@@ -346,6 +361,39 @@ describe("subscribe", () => {
 		});
 		expect(delays).toEqual([500, 1000, 2000]);
 		expect(stats.failures).toBe(3);
+	});
+
+	it("resets the backoff when a long-lived stream dies with an error", async () => {
+		// Regression: the stability check used to live inside the `try`, so a stream
+		// that rejected (RST / idle timeout — the normal way a link breaks) jumped
+		// straight to the catch and skipped the reset. `attempt` then only ever grew,
+		// parking the reconnect delay at the cap for the rest of the process'
+		// lifetime even though the endpoint was healthy.
+		const delays: number[] = [];
+		const controller = new AbortController();
+		let clock = 0;
+		await subscribe({
+			server: "https://ntfy.sh",
+			topic: "demo",
+			signal: controller.signal,
+			onMessage: () => undefined,
+			stableStreamMs: 30_000,
+			// every connection looks long-lived, so each one should reset the backoff
+			now: () => {
+				clock += 60_000;
+				return clock;
+			},
+			fetchImpl: (async () => resetResponse()) as typeof fetch,
+			sleep: async (ms) => {
+				delays.push(ms);
+				if (delays.length >= 3) {
+					controller.abort();
+				}
+			},
+			random: () => 0,
+			backoffBaseMs: 1000,
+		});
+		expect(delays).toEqual([500, 500, 500]);
 	});
 
 	it("resets the backoff once a stream has proven stable", async () => {

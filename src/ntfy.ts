@@ -295,24 +295,27 @@ export async function subscribe(options: SubscribeOptions): Promise<SubscribeSta
 	};
 
 	while (!signal.aborted) {
+		let connectedAt: number | undefined;
 		try {
 			const response = await fetchImpl(url, { headers: buildHeaders(token), signal });
 			if (!response.ok) {
 				throw new Error(`ntfy returned HTTP ${response.status}`);
 			}
-			const connectedAt = now();
+			connectedAt = now();
 			await readStream(response, dispatch);
-			// Only a stream that actually lived for a while proves the endpoint is
-			// healthy. Resetting on the response headers alone (the previous
-			// behaviour) meant "connect OK then close at once" retried forever at
-			// ~2 req/s and never escalated towards backoffMaxMs.
-			if (now() - connectedAt >= stableStreamMs) {
-				attempt = 0;
-			}
 			throw new Error("ntfy stream ended");
 		} catch (error) {
 			if (signal.aborted) {
 				return stats;
+			}
+			// A stream that stayed open for `stableStreamMs` proves the endpoint is
+			// healthy, whether it ended cleanly or threw. The reset has to happen
+			// here, before the failure is counted: `readStream` rejects on the common
+			// failure modes (RST, idle timeout, aborted socket), and those used to
+			// skip a reset that lived inside the try block, so `attempt` only ever
+			// grew and a flaky link parked the reconnect delay at the cap forever.
+			if (connectedAt !== undefined && now() - connectedAt >= stableStreamMs) {
+				attempt = 0;
 			}
 			attempt += 1;
 			stats.failures += 1;

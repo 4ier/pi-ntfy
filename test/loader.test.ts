@@ -12,6 +12,7 @@
  * `pi install` works at all — is untested. This loads the real entry through the real loader.
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,14 +24,44 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 const projectRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const entry = path.join(projectRoot, "src", "index.ts");
 
+interface PackageManifest {
+	pi?: { extensions?: string[] };
+}
+
+function readManifest(): PackageManifest {
+	return JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")) as PackageManifest;
+}
+
 function freshJiti(): ReturnType<typeof createJiti> {
 	return createJiti(projectRoot, { moduleCache: false });
 }
 
 describe("jiti loads the extension entry the way pi does", () => {
+	it("the pi manifest points at a file that exists", () => {
+		// Nothing else covers this. `pi install` resolves the extension path from the
+		// package.json `pi.extensions` entry, so a typo there (`./src/index.js`, a moved
+		// file) would keep every test and the CI smoke step green while the package is
+		// uninstallable.
+		const declared = readManifest().pi?.extensions;
+		expect(declared).toEqual(["./src/index.ts"]);
+		for (const relative of declared ?? []) {
+			expect(fs.existsSync(path.join(projectRoot, relative)), `${relative} must exist`).toBe(true);
+		}
+		// and the declared path must be the same file this suite loads directly
+		expect(path.resolve(projectRoot, declared?.[0] ?? "")).toBe(path.resolve(entry));
+	});
+
 	it("resolves src/index.ts and its .js relative specifiers", async () => {
 		const factory = await freshJiti().import(entry, { default: true });
 		expect(typeof factory).toBe("function");
+	});
+
+	it("loads through the path declared in the manifest, not just a hardcoded one", async () => {
+		const declared = readManifest().pi?.extensions ?? [];
+		for (const relative of declared) {
+			const factory = await freshJiti().import(path.join(projectRoot, relative), { default: true });
+			expect(typeof factory).toBe("function");
+		}
 	});
 
 	it("the factory registers exactly the handlers and command the docs promise", async () => {

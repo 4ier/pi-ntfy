@@ -141,15 +141,20 @@ what to do from the message alone (include topic, priority and tags when present
   status `ntfy: reconnecting in Ns`, then reconnect. Log failures to stderr at most once per
   backoff step (do not spam).
 
+The reset rule in full: `attempt` returns to 0 only when a connection has stayed open for
+`stableStreamMs`, evaluated in the catch block so that *both* a clean stream end and a thrown
+failure (RST, idle timeout) count. `connectedAt` is undefined for failures before the response
+headers arrive, which is why a plain connection error still escalates.
+
 ### 6.3 Filter pipeline (in order, all pure and unit-testable)
 1. drop if `event !== "message"`
-2. drop if `priority < PI_NTFY_MIN_PRIORITY`
-3. drop if `PI_NTFY_TAG_ALLOW` is set and the message's tags don't intersect it
-4. drop if the message has no `id` (it cannot be de-duplicated, so it would be re-delivered
+2. drop if the message has no `id` (it cannot be de-duplicated, so it would be re-delivered
    on every reconnect) — added during implementation
+3. drop if `priority < PI_NTFY_MIN_PRIORITY`
+4. drop if `PI_NTFY_TAG_ALLOW` is set and the message's tags don't intersect it
 5. drop if the message `id` was already processed (persisted set, capped at the most recent
    500 ids)
-5. otherwise: mark processed (persist) → render the prompt → deliver
+6. otherwise: mark processed (persist) → render the prompt → deliver
 
 ### 6.4 Delivery
 - `ctx.isIdle()` → `sendUserMessage(prompt)` (or `sendMessage` when `PI_NTFY_IDLE_DELIVERY=custom`)

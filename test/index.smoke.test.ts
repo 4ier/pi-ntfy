@@ -51,7 +51,8 @@ interface Harness {
 	handlers: Map<string, (event: unknown, ctx: unknown) => Promise<unknown> | unknown>;
 	commands: Map<string, { description?: string; handler: (args: string, ctx: unknown) => Promise<void> }>;
 	sent: Array<{ message: unknown; options: unknown }>;
-	userMessages: string[];
+	/** Both arguments are kept: dropping `options` made a P2-A regression invisible. */
+	userMessages: Array<{ text: string; options: unknown }>;
 	notifications: Array<{ text: string; level: string }>;
 	statuses: Array<[string, string | undefined]>;
 	ctx: unknown;
@@ -64,7 +65,7 @@ function makeHarness(): Harness {
 		{ description?: string; handler: (args: string, ctx: unknown) => Promise<void> }
 	>();
 	const sent: Array<{ message: unknown; options: unknown }> = [];
-	const userMessages: string[] = [];
+	const userMessages: Array<{ text: string; options: unknown }> = [];
 	const notifications: Array<{ text: string; level: string }> = [];
 	const statuses: Array<[string, string | undefined]> = [];
 
@@ -97,8 +98,8 @@ function makeHarness(): Harness {
 		sendMessage: (message: unknown, options: unknown) => {
 			sent.push({ message, options });
 		},
-		sendUserMessage: (text: string) => {
-			userMessages.push(text);
+		sendUserMessage: (text: string, options?: unknown) => {
+			userMessages.push({ text, options });
 		},
 		appendEntry: () => undefined,
 		events: { on: () => undefined, emit: () => undefined },
@@ -213,7 +214,10 @@ describe("extension entry", () => {
 		await startSession(harness);
 		await waitFor(() => harness.userMessages.length > 0);
 
-		expect(harness.userMessages[0]).toBe("[ntfy] Backup stalled\nno progress");
+		expect(harness.userMessages[0]?.text).toBe("[ntfy] Backup stalled\nno progress");
+		// idle delivery must still name a delivery mode so that losing the
+		// isIdle() race queues the message instead of rejecting it
+		expect(harness.userMessages[0]?.options).toMatchObject({ deliverAs: "steer" });
 		expect(harness.statuses).toContainEqual(["ntfy", "ntfy: connected"]);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
@@ -236,7 +240,7 @@ describe("extension entry", () => {
 		await startSession(harness);
 		await waitFor(() => harness.userMessages.length > 0);
 
-		expect(harness.userMessages[0]).toBe("ALERT<T|a,b|p5>");
+		expect(harness.userMessages[0]?.text).toBe("ALERT<T|a,b|p5>");
 	});
 
 	it("uses an extension-authored message when idle delivery is custom", async () => {

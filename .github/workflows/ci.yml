@@ -53,3 +53,35 @@ jobs:
           }).catch((e) => { console.error(e); process.exit(1); });
           "
           rm -rf .tmp-build
+
+      - name: Check the published artifact actually contains the extension
+        run: |
+          # The extension ships as TypeScript source (jiti loads it, there is no build
+          # step), so a typo in `files` would make `pi install npm:@4ier/pi-ntfy`
+          # install a package with no entry point while every other check stays green.
+          npm pack --dry-run --json > pack.json
+          node -e "
+          const report = require('./pack.json');
+          const files = (report[0]?.files ?? []).map((f) => f.path);
+          const required = [
+            'package.json',
+            'README.md',
+            'LICENSE',
+            'src/index.ts',
+            'src/config.ts',
+            'src/ntfy.ts',
+            'src/filter.ts',
+            'src/template.ts',
+            'src/state.ts',
+            'src/log.ts',
+          ];
+          const missing = required.filter((p) => !files.includes(p));
+          if (missing.length > 0) { throw new Error('published tarball is missing: ' + missing.join(', ')); }
+          const manifest = require('./package.json');
+          for (const entry of manifest.pi?.extensions ?? []) {
+            const normalized = entry.startsWith('./') ? entry.slice(2) : entry;
+            if (!files.includes(normalized)) { throw new Error('pi.extensions ' + entry + ' is not in the tarball'); }
+          }
+          console.log('pack contents ok: ' + files.length + ' files');
+          "
+          rm -f pack.json
