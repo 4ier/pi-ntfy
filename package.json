@@ -1,0 +1,51 @@
+{
+  "name": "@4ier/pi-ntfy",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "pi extension: subscribe to an ntfy topic and turn incoming notifications into agent turns (the inbound half of pi <-> ntfy)",
+  "license": "MIT",
+  "author": "4ier",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/4ier/pi-ntfy.git"
+  },
+  "homepage": "https://github.com/4ier/pi-ntfy#readme",
+  "bugs": {
+    "url": "https://github.com/4ier/pi-ntfy/issues"
+  },
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "ntfy",
+    "notifications",
+    "agent",
+    "automation"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "docs"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

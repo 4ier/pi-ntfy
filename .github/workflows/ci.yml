@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Smoke-load the extension entry under plain Node
+        run: |
+          npx tsc -p tsconfig.json --noEmit false --outDir .tmp-build --rootDir .
+          node -e "
+          import('./.tmp-build/src/index.js').then((m) => {
+            if (typeof m.default !== 'function') { throw new Error('default export is not a function'); }
+            const handlers = {}, commands = {};
+            m.default({ on: (n, h) => { handlers[n] = h; }, registerCommand: (n, d) => { commands[n] = d; },
+                        sendMessage() {}, sendUserMessage() {}, appendEntry() {},
+                        events: { on() {}, emit() {} } });
+            if (!handlers.session_start) { throw new Error('session_start not registered'); }
+            if (!commands.ntfy) { throw new Error('ntfy command not registered'); }
+            console.log('smoke load ok');
+          }).catch((e) => { console.error(e); process.exit(1); });
+          "
+          rm -rf .tmp-build

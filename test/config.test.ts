@@ -1,0 +1,268 @@
+import path from "node:path";
+
+import { describe, expect, it } from "vitest";
+
+import {
+	DEFAULT_PROMPT_TEMPLATE,
+	DEFAULT_SERVER,
+	parseConfig,
+	type EnvLike,
+} from "../src/config.js";
+
+const HOME = "/home/tester";
+
+function parse(env: EnvLike = {}) {
+	return parseConfig({ env, homeDir: HOME });
+}
+
+function withTopic(extra: EnvLike = {}) {
+	return parse({ PI_NTFY_TOPIC: "demo", ...extra });
+}
+
+describe("parseConfig — topic", () => {
+	it("disables the extension when the topic is missing", () => {
+		const config = parse();
+		expect(config.enabled).toBe(false);
+		expect(config.errors.join(" ")).toContain("PI_NTFY_TOPIC is not set");
+	});
+
+	it("disables the extension when the topic is blank", () => {
+		expect(parse({ PI_NTFY_TOPIC: "   " }).enabled).toBe(false);
+	});
+
+	it("accepts a normal topic", () => {
+		const config = withTopic();
+		expect(config.enabled).toBe(true);
+		expect(config.topic).toBe("demo");
+		expect(config.errors).toHaveLength(0);
+	});
+
+	it("trims surrounding whitespace", () => {
+		expect(parse({ PI_NTFY_TOPIC: "  demo  " }).topic).toBe("demo");
+	});
+
+	it.each(["has space", "has/slash", "has.dot", "有中文", "x".repeat(65)])(
+		"rejects the invalid topic %j",
+		(topic) => {
+			const config = parse({ PI_NTFY_TOPIC: topic });
+			expect(config.enabled).toBe(false);
+			expect(config.errors.join(" ")).toContain("not a valid ntfy topic");
+		},
+	);
+
+	it("accepts a 64-character topic", () => {
+		expect(parse({ PI_NTFY_TOPIC: "x".repeat(64) }).enabled).toBe(true);
+	});
+});
+
+describe("parseConfig — server", () => {
+	it("defaults to ntfy.sh", () => {
+		expect(withTopic().server).toBe(DEFAULT_SERVER);
+	});
+
+	it("strips trailing slashes", () => {
+		expect(withTopic({ PI_NTFY_SERVER: "https://ntfy.example.com///" }).server).toBe(
+			"https://ntfy.example.com",
+		);
+	});
+
+	it("accepts http for local servers", () => {
+		expect(withTopic({ PI_NTFY_SERVER: "http://127.0.0.1:2586" }).server).toBe("http://127.0.0.1:2586");
+	});
+
+	it.each(["ntfy.sh", "ftp://ntfy.sh", "://nope"])("rejects the invalid server %j", (server) => {
+		const config = withTopic({ PI_NTFY_SERVER: server });
+		expect(config.enabled).toBe(false);
+		expect(config.errors.join(" ")).toContain("must be an http(s) URL");
+	});
+});
+
+describe("parseConfig — token", () => {
+	it("is undefined by default", () => {
+		expect(withTopic().token).toBeUndefined();
+	});
+
+	it("is trimmed", () => {
+		expect(withTopic({ PI_NTFY_TOKEN: "  abc  " }).token).toBe("abc");
+	});
+
+	it("treats a blank token as absent", () => {
+		expect(withTopic({ PI_NTFY_TOKEN: "   " }).token).toBeUndefined();
+	});
+});
+
+describe("parseConfig — min priority", () => {
+	it("defaults to 1", () => {
+		expect(withTopic().minPriority).toBe(1);
+	});
+
+	it.each(["1", "3", "5"])("accepts %s", (value) => {
+		expect(withTopic({ PI_NTFY_MIN_PRIORITY: value }).minPriority).toBe(Number(value));
+	});
+
+	it.each(["0", "6", "-1", "abc", "2.5", ""])("falls back to 1 for %j", (value) => {
+		const config = withTopic({ PI_NTFY_MIN_PRIORITY: value });
+		expect(config.minPriority).toBe(1);
+		if (value !== "") {
+			expect(config.warnings.join(" ")).toContain("PI_NTFY_MIN_PRIORITY");
+		}
+	});
+});
+
+describe("parseConfig — tag allowlist", () => {
+	it("is null by default", () => {
+		expect(withTopic().tagAllow).toBeNull();
+	});
+
+	it("splits and trims a comma list", () => {
+		expect(withTopic({ PI_NTFY_TAG_ALLOW: " a , b ,c " }).tagAllow).toEqual(["a", "b", "c"]);
+	});
+
+	it("drops empty entries", () => {
+		expect(withTopic({ PI_NTFY_TAG_ALLOW: "a,,b," }).tagAllow).toEqual(["a", "b"]);
+	});
+
+	it("falls back to null and warns when nothing usable remains", () => {
+		const config = withTopic({ PI_NTFY_TAG_ALLOW: " , , " });
+		expect(config.tagAllow).toBeNull();
+		expect(config.warnings.join(" ")).toContain("contained no tags");
+	});
+
+	it("accepts a single tag", () => {
+		expect(withTopic({ PI_NTFY_TAG_ALLOW: "gprelay" }).tagAllow).toEqual(["gprelay"]);
+	});
+});
+
+describe("parseConfig — delivery modes", () => {
+	it("defaults to user + steer", () => {
+		const config = withTopic();
+		expect(config.idleDelivery).toBe("user");
+		expect(config.streamingDelivery).toBe("steer");
+	});
+
+	it("accepts the documented values", () => {
+		const config = withTopic({
+			PI_NTFY_IDLE_DELIVERY: "custom",
+			PI_NTFY_STREAMING_DELIVERY: "followUp",
+		});
+		expect(config.idleDelivery).toBe("custom");
+		expect(config.streamingDelivery).toBe("followUp");
+	});
+
+	it("warns and falls back for an unknown idle mode", () => {
+		const config = withTopic({ PI_NTFY_IDLE_DELIVERY: "nope" });
+		expect(config.idleDelivery).toBe("user");
+		expect(config.warnings.join(" ")).toContain("PI_NTFY_IDLE_DELIVERY");
+	});
+
+	it("warns and falls back for an unknown streaming mode", () => {
+		const config = withTopic({ PI_NTFY_STREAMING_DELIVERY: "nextTurn" });
+		expect(config.streamingDelivery).toBe("steer");
+		expect(config.warnings.join(" ")).toContain("PI_NTFY_STREAMING_DELIVERY");
+	});
+});
+
+describe("parseConfig — retries", () => {
+	it("defaults to unlimited", () => {
+		expect(withTopic().maxRetries).toBeNull();
+	});
+
+	it("accepts zero (never retry)", () => {
+		expect(withTopic({ PI_NTFY_MAX_RETRIES: "0" }).maxRetries).toBe(0);
+	});
+
+	it("accepts a positive count", () => {
+		expect(withTopic({ PI_NTFY_MAX_RETRIES: "3" }).maxRetries).toBe(3);
+	});
+
+	it.each(["-1", "abc", "1.5"])("warns and falls back to unlimited for %j", (value) => {
+		const config = withTopic({ PI_NTFY_MAX_RETRIES: value });
+		expect(config.maxRetries).toBeNull();
+		expect(config.warnings.join(" ")).toContain("PI_NTFY_MAX_RETRIES");
+	});
+});
+
+describe("parseConfig — prompt template", () => {
+	it("defaults to the shipped template", () => {
+		expect(withTopic().promptTemplate).toBe(DEFAULT_PROMPT_TEMPLATE);
+	});
+
+	it("keeps a custom template verbatim", () => {
+		const template = "ALERT {{title}}\n{{message}}\n";
+		expect(withTopic({ PI_NTFY_PROMPT_TEMPLATE: template }).promptTemplate).toBe(template);
+	});
+
+	it("warns and falls back when the template is blank", () => {
+		const config = withTopic({ PI_NTFY_PROMPT_TEMPLATE: "   " });
+		expect(config.promptTemplate).toBe(DEFAULT_PROMPT_TEMPLATE);
+		expect(config.warnings.join(" ")).toContain("PI_NTFY_PROMPT_TEMPLATE");
+	});
+});
+
+describe("parseConfig — state file", () => {
+	it("defaults under the home directory", () => {
+		expect(withTopic().stateFile).toBe(path.join(HOME, ".pi", "agent", "ntfy-state.json"));
+	});
+
+	it("expands a leading tilde", () => {
+		expect(withTopic({ PI_NTFY_STATE_FILE: "~/x/y.json" }).stateFile).toBe(path.join(HOME, "x/y.json"));
+	});
+
+	it("expands a bare tilde", () => {
+		expect(withTopic({ PI_NTFY_STATE_FILE: "~" }).stateFile).toBe(HOME);
+	});
+
+	it("keeps an absolute path", () => {
+		expect(withTopic({ PI_NTFY_STATE_FILE: "/var/lib/ntfy.json" }).stateFile).toBe("/var/lib/ntfy.json");
+	});
+});
+
+describe("parseConfig — quiet", () => {
+	it("is false by default", () => {
+		expect(withTopic().quiet).toBe(false);
+	});
+
+	it.each(["1", "true", "TRUE", "yes", "on"])("accepts %j", (value) => {
+		expect(withTopic({ PI_NTFY_QUIET: value }).quiet).toBe(true);
+	});
+
+	it.each(["0", "false", "no", "off", "maybe", ""])("rejects %j", (value) => {
+		expect(withTopic({ PI_NTFY_QUIET: value }).quiet).toBe(false);
+	});
+});
+
+describe("parseConfig — combined", () => {
+	it("collects several errors at once", () => {
+		const config = parse({ PI_NTFY_TOPIC: "bad topic", PI_NTFY_SERVER: "nope" });
+		expect(config.enabled).toBe(false);
+		expect(config.errors).toHaveLength(2);
+	});
+
+	it("produces warnings without disabling", () => {
+		const config = withTopic({ PI_NTFY_MIN_PRIORITY: "9", PI_NTFY_MAX_RETRIES: "-2" });
+		expect(config.enabled).toBe(true);
+		expect(config.warnings.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it("returns no diagnostics for a clean configuration", () => {
+		const config = withTopic({
+			PI_NTFY_MIN_PRIORITY: "4",
+			PI_NTFY_TAG_ALLOW: "gprelay",
+			PI_NTFY_IDLE_DELIVERY: "custom",
+			PI_NTFY_STREAMING_DELIVERY: "followUp",
+			PI_NTFY_MAX_RETRIES: "5",
+			PI_NTFY_QUIET: "1",
+		});
+		expect(config.warnings).toEqual([]);
+		expect(config.errors).toEqual([]);
+		expect(config).toMatchObject({
+			enabled: true,
+			minPriority: 4,
+			tagAllow: ["gprelay"],
+			idleDelivery: "custom",
+			streamingDelivery: "followUp",
+			maxRetries: 5,
+			quiet: true,
+		});
+	});
+});
