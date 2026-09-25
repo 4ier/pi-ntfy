@@ -24,7 +24,67 @@ pi install git:github.com/4ier/pi-ntfy
 pi -e ./src/index.ts
 ```
 
-Then export `PI_NTFY_TOPIC` (and friends) in the environment pi runs in, and start pi.
+That is all that is required to load it. It stays **completely silent** until you point it at a
+topic — either export `PI_NTFY_TOPIC` before starting pi, or enable it from inside a running
+session (see [Enabling on demand](#enabling-on-demand)).
+
+## Enabling on demand
+
+`pi-ntfy` is inert until it has a topic to listen to. There are two ways to give it one, and
+neither requires restarting pi.
+
+### A human: `/ntfy enable`
+
+```text
+/ntfy enable my-agent-9f3c1a7e2b
+```
+
+That writes `~/.pi/agent/pi-ntfy.json` and starts the subscription immediately. Related
+subcommands:
+
+| Command | Effect |
+|---|---|
+| `/ntfy enable <topic>` | Point at a topic, persist it, start listening now |
+| `/ntfy disable` | Stop listening and record `enabled: false` |
+| `/ntfy set <key> <value>` | Change one setting, persist it, re-apply |
+| `/ntfy reload` | Re-read the config file and restart the subscription |
+
+### An agent: the `ntfy_configure` tool
+
+An agent cannot type slash commands, so the same operations are exposed as a tool it can call
+on itself:
+
+```jsonc
+{ "action": "get" }                                     // current config + connection state
+{ "action": "set", "topic": "my-agent-9f3c1a7e2b" }     // enable / repoint
+{ "action": "set", "enabled": false }                   // tell it to stop
+```
+
+`get` never returns the token in clear text — only `"set"` or `"unset"`. `set` persists to the
+config file and takes effect in the same session, so an agent asked "tell me if the build
+breaks" can wire that up without a human in the loop.
+
+### The config file
+
+`~/.pi/agent/pi-ntfy.json` (override with `PI_NTFY_CONFIG_FILE`):
+
+```json
+{
+  "enabled": true,
+  "topic": "my-agent-9f3c1a7e2b",
+  "server": "https://ntfy.sh",
+  "token": "$NTFY_TOKEN",
+  "minPriority": 2,
+  "tagAllow": ["ci", "gprelay"]
+}
+```
+
+Every key mirrors the environment variables below. A `token` of the form `$VAR` or `${VAR}` is
+resolved from the environment, which is how you keep the secret out of the file. (Only a
+*whole-value* reference is expanded, so a `promptTemplate` containing a `$` is left alone.)
+
+A missing file, or a malformed one, is never fatal: the extension behaves exactly like an
+unconfigured one and stays quiet.
 
 ## Quick start
 
@@ -54,21 +114,32 @@ Send `/ntfy test hello` inside pi to prove the round trip end to end.
 
 ## Configuration
 
-Everything is environment variables. Nothing is written to the repo.
+Two sources, **environment wins over the config file**, which wins over the built-in defaults:
 
-| Variable | Required | Default | Meaning |
-|---|---|---|---|
-| `PI_NTFY_TOPIC` | **yes** | — | Topic to subscribe to. 1–64 chars of `A-Za-z0-9_-`. If unset, the extension loads **disabled** and says so — it never errors. |
-| `PI_NTFY_SERVER` | no | `https://ntfy.sh` | Base URL of the ntfy server (self-hosted works, `http://` allowed). |
-| `PI_NTFY_TOKEN` | no | — | Bearer token, for protected topics (used for both subscribe and publish). |
-| `PI_NTFY_MIN_PRIORITY` | no | `1` | Drop messages below this ntfy priority (1–5). |
-| `PI_NTFY_TAG_ALLOW` | no | — | Comma-separated tag allowlist. When set, only messages carrying one of these tags are delivered. |
-| `PI_NTFY_IDLE_DELIVERY` | no | `user` | `user` → a normal user message; `custom` → an extension-authored message (`customType: "ntfy"`). |
-| `PI_NTFY_STREAMING_DELIVERY` | no | `steer` | `steer` or `followUp` when the agent is mid-turn. |
-| `PI_NTFY_MAX_RETRIES` | no | unlimited | Number of reconnect **retries** allowed after a failed connection before giving up (`0` = never retry at all). |
-| `PI_NTFY_PROMPT_TEMPLATE` | no | see below | Template for the injected text. |
-| `PI_NTFY_STATE_FILE` | no | `~/.pi/agent/ntfy-state.json` | Where processed message ids are remembered. `~` is expanded. |
-| `PI_NTFY_QUIET` | no | — | `1`/`true`/`yes`/`on` → suppress UI notifications for connection state changes. |
+```text
+PI_NTFY_* environment variables   >   ~/.pi/agent/pi-ntfy.json   >   defaults
+```
+
+The environment is the escape hatch for one-off and CI runs; the file is what a running
+session (or the agent) can write.
+
+| Environment variable | Config file key | Required | Default | Meaning |
+|---|---|---|---|---|
+| `PI_NTFY_TOPIC` | `topic` | **yes** | — | Topic to subscribe to. 1–64 chars of `A-Za-z0-9_-`. With no topic from either source the extension is **silently inert** — no warning, no request, no footer entry. |
+| `PI_NTFY_SERVER` | `server` | no | `https://ntfy.sh` | Base URL of the ntfy server (self-hosted works, `http://` allowed). |
+| `PI_NTFY_TOKEN` | `token` | no | — | Bearer token, for protected topics (subscribe and publish). In the file, write `$VAR` to read it from the environment. |
+| `PI_NTFY_MIN_PRIORITY` | `minPriority` | no | `1` | Drop messages below this ntfy priority (1–5). |
+| `PI_NTFY_TAG_ALLOW` | `tagAllow` | no | — | Tag allowlist. Env: comma-separated string. File: array of strings. Only messages carrying one of these tags are delivered. |
+| `PI_NTFY_IDLE_DELIVERY` | `idleDelivery` | no | `user` | `user` → a normal user message; `custom` → an extension-authored message (`customType: "ntfy"`). |
+| `PI_NTFY_STREAMING_DELIVERY` | `streamingDelivery` | no | `steer` | `steer` or `followUp` when the agent is mid-turn. |
+| `PI_NTFY_MAX_RETRIES` | `maxRetries` | no | unlimited | Number of reconnect **retries** allowed after a failed connection before giving up (`0` = never retry at all). |
+| `PI_NTFY_PROMPT_TEMPLATE` | `promptTemplate` | no | see below | Template for the injected text. |
+| `PI_NTFY_STATE_FILE` | `stateFile` | no | `~/.pi/agent/ntfy-state.json` | Where processed message ids are remembered. `~` is expanded. |
+| `PI_NTFY_QUIET` | `quiet` | no | — | `1`/`true`/`yes`/`on` → suppress UI notifications for connection state changes. |
+| `PI_NTFY_CONFIG_FILE` | — | no | `~/.pi/agent/pi-ntfy.json` | Where the config file lives. |
+
+The config file also accepts `"enabled"` (boolean). `false` is an explicit "off" — the
+extension stops listening and stays quiet, and `enable` has to be called to turn it back on.
 
 Default template:
 
@@ -95,7 +166,11 @@ Investigate, then fix it. If you cannot fix it automatically, explain why and st
 
 | Command | Effect |
 |---|---|
-| `/ntfy` | Show status: topic, server, connected?, delivered count, remembered ids, last error |
+| `/ntfy` | Show the effective configuration and runtime state |
+| `/ntfy enable <topic>` | Configure a topic, persist it, start listening now |
+| `/ntfy disable` | Stop listening and persist `enabled: false` |
+| `/ntfy set <key> <value>` | Change one setting (`topic`, `server`, `token`, `minPriority`, `tagAllow`, `idleDelivery`, `streamingDelivery`, `maxRetries`, `promptTemplate`, `stateFile`, `quiet`, `enabled`) |
+| `/ntfy reload` | Re-read the config file and restart the subscription |
 | `/ntfy test [message]` | Publish a test message to the topic (proves the round trip) |
 | `/ntfy reconnect` | Drop the current stream and reconnect now |
 | `/ntfy ids` | How many processed message ids are remembered |
@@ -151,6 +226,11 @@ Treat the topic name as a capability:
   claimed), but set `PI_NTFY_STATE_FILE` per topic if you run several.
 - `PI_NTFY_STATE_FILE=~` expands to your home **directory**, which cannot be written; the
   extension logs a warning and falls back to the default file.
+- **The config file is persisted, so mind the token.** `ntfy_configure` and `/ntfy set token`
+  write what you give them. Pass `"$NTFY_TOKEN"` rather than the literal secret, so the file
+  stays safe to copy, sync or commit by accident. The file is written with mode `0600`.
+- **The config file is the only place a running session can persist settings.** Env vars set
+  after pi started are not picked up; `/ntfy reload` re-reads the *file*, not `process.env`.
 
 ## Development
 

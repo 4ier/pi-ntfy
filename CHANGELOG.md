@@ -6,6 +6,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-26
+
+### Added
+
+- **On-demand configuration.** A running session can turn alerts on without restarting pi:
+  `/ntfy enable <topic>`, `/ntfy disable`, `/ntfy set <key> <value>`, `/ntfy reload`.
+- **`ntfy_configure` tool** so an *agent* can configure its own alert channel. An agent cannot
+  type a slash command, so without this the only way to enable alerts was for a human to set an
+  environment variable and restart pi. `get` returns the effective configuration plus connection
+  state; `set` writes it and applies it live.
+- **Config file** `~/.pi/agent/pi-ntfy.json` (override with `PI_NTFY_CONFIG_FILE`). Keys mirror the
+  environment variables; `token` accepts `$VAR` / `${VAR}` so the secret can stay in the
+  environment. Written mode `0600`, atomically (temp + rename), preserving unknown keys.
+- Configuration precedence is documented and enforced: **env > config file > defaults**.
+
+### Changed
+
+- **An unconfigured extension is now completely silent.** It used to print
+  `warn PI_NTFY_TOPIC is not set; pi-ntfy is disabled` in every session and claim a footer slot.
+  Not every session wants an inbound alert channel, so "no topic" is now a normal state: no
+  warning, no notification, no footer entry, and no network request. The reason is available at
+  debug level.
+- A missing topic no longer appears in `config.errors`. Invalid values that the user explicitly
+  set (a malformed topic or server URL) still do, and `NtfyConfig` gained `configured`, `source`
+  and `reason` so callers can tell "not requested" apart from "requested but broken".
+- `session_shutdown` clears the footer entry instead of leaving a stale `ntfy: stopped`.
+- `/ntfy` with no session now prints a machine-readable configuration snapshot (token masked)
+  instead of only complaining that no session is running.
+
+### Fixed
+
+- A malformed or unreadable config file degrades to "unconfigured" rather than breaking the
+  session, and `ntfy_configure` can repair it in place.
+
+### Testing
+
+- 49 new tests: `test/configFile.test.ts` (path resolution, `$VAR` expansion, value mapping,
+  parse/read/write including merge, unknown-key preservation, failure paths, masking) and
+  integration tests for enable/disable/set/reload, the tool's get/set/no-op paths, token
+  masking, and the silent-when-unconfigured regression.
+
 ## [0.1.1] - 2026-09-26
 
 ### Fixed
@@ -76,6 +117,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test suite (vitest, no network access) covering every pure module plus an integration
   smoke test of the extension entry point.
 
-[Unreleased]: https://github.com/4ier/pi-ntfy/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/4ier/pi-ntfy/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/4ier/pi-ntfy/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/4ier/pi-ntfy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/4ier/pi-ntfy/releases/tag/v0.1.0

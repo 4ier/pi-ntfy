@@ -345,7 +345,7 @@ function piSendCustom(message: CustomMessage, deliverAs: "steer" | "followUp" | 
 
 function statusLines(current: SessionState): string[] {
 	const { config, stats } = current;
-	return [
+	const lines = [
 		`configured: ${config.configured ? `yes (from ${config.source})` : "no"}`,
 		`config file:${current.configFile.exists ? "" : " (absent)"} ${current.configFile.path}`,
 		`topic:      ${config.configured ? config.topic : "-"}`,
@@ -358,6 +358,11 @@ function statusLines(current: SessionState): string[] {
 		`streams:    ${stats?.connections ?? 0} opened, ${stats?.failures ?? 0} failures`,
 		`last error: ${current.lastError ?? "-"}`,
 	];
+	// A file the extension had to ignore is worth showing when someone actually asks.
+	if (current.configFile.error !== undefined) {
+		lines.push(`config file error: ${current.configFile.error}`);
+	}
+	return lines;
 }
 
 /**
@@ -592,8 +597,11 @@ export default function (pi: ExtensionAPI): void {
 			};
 			state = next;
 
+			// A broken config file is reported through `/ntfy` and the tool snapshot, not at warn
+			// level: warning here would nag on every session, which is the exact behaviour 0.2.0
+			// set out to remove. It is still discoverable on demand.
 			if (configFile.error !== undefined) {
-				logger.warn(`ignoring ${configFile.path}: ${configFile.error}`);
+				logger.debug(`ignoring ${configFile.path}: ${configFile.error}`);
 			}
 
 			// Nobody asked for alerts: stay completely quiet (no status, no notify, no request).

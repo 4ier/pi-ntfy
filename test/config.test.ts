@@ -19,6 +19,10 @@ function withTopic(extra: EnvLike = {}) {
 	return parse({ PI_NTFY_TOPIC: "demo", ...extra });
 }
 
+function parseBoth(env: EnvLike, fileEnv: EnvLike) {
+	return parseConfig({ env, fileEnv, homeDir: HOME });
+}
+
 describe("parseConfig — topic", () => {
 	it("is inert but NOT an error when no topic is configured", () => {
 		// Changed in 0.2.0: a missing topic used to land in `errors`, which made every
@@ -276,5 +280,60 @@ describe("parseConfig — combined", () => {
 			maxRetries: 5,
 			quiet: true,
 		});
+	});
+});
+
+describe("parseConfig — env vs config file", () => {
+	it("uses the file when the env is empty", () => {
+		const config = parseBoth({}, { PI_NTFY_TOPIC: "from-file" });
+		expect(config.enabled).toBe(true);
+		expect(config.topic).toBe("from-file");
+		expect(config.source).toBe("file");
+	});
+
+	it("lets the env win over the file", () => {
+		// The env is the escape hatch for one-off and CI runs; it must not be shadowed.
+		const config = parseBoth(
+			{ PI_NTFY_TOPIC: "from-env", PI_NTFY_SERVER: "https://env.example" },
+			{ PI_NTFY_TOPIC: "from-file", PI_NTFY_SERVER: "https://file.example" },
+		);
+		expect(config.topic).toBe("from-env");
+		expect(config.server).toBe("https://env.example");
+		expect(config.source).toBe("env");
+	});
+
+	it("fills in fields the env does not set from the file", () => {
+		const config = parseBoth(
+			{ PI_NTFY_TOPIC: "from-env" },
+			{ PI_NTFY_MIN_PRIORITY: "4", PI_NTFY_TAG_ALLOW: "a,b" },
+		);
+		expect(config.minPriority).toBe(4);
+		expect(config.tagAllow).toEqual(["a", "b"]);
+	});
+
+	it("does not let undefined env keys erase file values", () => {
+		// process.env is full of undefined-valued keys; a naive spread would wipe the file.
+		const config = parseBoth({ PI_NTFY_TOPIC: undefined }, { PI_NTFY_TOPIC: "from-file" });
+		expect(config.topic).toBe("from-file");
+		expect(config.source).toBe("file");
+	});
+
+	it("falls back to defaults when neither source sets a field", () => {
+		const config = parseBoth({ PI_NTFY_TOPIC: "x" }, {});
+		expect(config.server).toBe(DEFAULT_SERVER);
+		expect(config.promptTemplate).toBe(DEFAULT_PROMPT_TEMPLATE);
+	});
+
+	it("rejects an invalid topic that came from the file", () => {
+		const config = parseBoth({}, { PI_NTFY_TOPIC: "has spaces" });
+		expect(config.enabled).toBe(false);
+		expect(config.configured).toBe(true);
+		expect(config.errors.join(" ")).toContain("not a valid ntfy topic");
+	});
+
+	it("treats an invalid env topic as the configured-but-broken case", () => {
+		const config = parseBoth({ PI_NTFY_TOPIC: "has spaces" }, {});
+		expect(config.source).toBe("env");
+		expect(config.errors).toHaveLength(1);
 	});
 });

@@ -485,3 +485,235 @@ describe("extension entry", () => {
 		await waitFor(() => harness.userMessages.length > 0);
 	});
 });
+
+describe("on-demand configuration (0.2.0)", () => {
+	/** Drive the config tool the way the LLM would. */
+	async function callTool(
+		harness: Harness,
+		params: Record<string, unknown>,
+	): Promise<{ text: string; isError: boolean }> {
+		const tool = harness.tools.get("ntfy_configure");
+		expect(tool).toBeDefined();
+		const result = (await tool?.execute("call-1", params, undefined, undefined, harness.ctx)) as {
+			content: Array<{ type: string; text: string }>;
+			isError?: boolean;
+		};
+		return { text: result.content.map((c) => c.text).join("\n"), isError: result.isError === true };
+	}
+
+	function configPath(): string {
+		return process.env["PI_NTFY_CONFIG_FILE"] as string;
+	}
+
+	it("starts listening when a topic is enabled from inside the session", async () => {
+		const fetchMock = vi.fn(async () => streamResponse(['{"id":"1","event":"open"}\n']));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		await harness.commands.get("ntfy")?.handler("enable demo-topic", harness.ctx);
+
+		// Persisted for the next session, and live right now.
+		expect(JSON.parse(fs.readFileSync(configPath(), "utf8"))).toMatchObject({
+			topic: "demo-topic",
+			enabled: true,
+		});
+		await waitFor(() => fetchMock.mock.calls.length > 0);
+	});
+
+	it("stops listening when disabled, and remembers that choice", async () => {
+		process.env["PI_NTFY_TOPIC"] = "demo";
+		const fetchMock = vi.fn(async () => streamResponse(['{"id":"1","event":"open"}\n']));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+		await waitFor(() => fetchMock.mock.calls.length > 0);
+
+		await harness.commands.get("ntfy")?.handler("disable", harness.ctx);
+
+		const callsAfter = fetchMock.mock.calls.length;
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(fetchMock.mock.calls.length).toBe(callsAfter);
+		expect(JSON.parse(fs.readFileSync(configPath(), "utf8"))).toMatchObject({ enabled: false });
+	});
+
+	it("applies /ntfy set to the running subscription", async () => {
+		const fetchMock = vi.fn(async () => streamResponse(['{"id":"1","event":"open"}\n']));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+
+		await harness.commands.get("ntfy")?.handler("set topic demo-set", harness.ctx);
+		await harness.commands.get("ntfy")?.handler("set minPriority 4", harness.ctx);
+
+		expect(JSON.parse(fs.readFileSync(configPath(), "utf8"))).toMatchObject({
+			topic: "demo-set",
+			minPriority: 4,
+		});
+		await waitFor(() => fetchMock.mock.calls.length > 0);
+	});
+
+	it("rejects an unknown /ntfy set key instead of writing it", async () => {
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+
+		await harness.commands.get("ntfy")?.handler("set topix demo", harness.ctx);
+
+		expect(harness.notifications.at(-1)?.text).toContain("unknown key");
+		expect(fs.existsSync(configPath())).toBe(false);
+	});
+
+	it("reports a failed config write instead of pretending it worked", async () => {
+		// The config path is resolved when the session starts, so it has to be broken
+		// *before* that — changing the env mid-session would not move the target.
+		const blocked = path.join(tmpDir, "blocked");
+		fs.writeFileSync(blocked, "not a directory");
+		process.env["PI_NTFY_CONFIG_FILE"] = path.join(blocked, "c.json");
+
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+
+		await harness.commands.get("ntfy")?.handler("enable demo", harness.ctx);
+
+		const last = harness.notifications.at(-1);
+		expect(last?.level).toBe("error");
+		expect(last?.text).toContain("could not write");
+	});
+
+	it("lets the agent configure itself through the tool", async () => {
+		const fetchMock = vi.fn(async () => streamResponse(['{"id":"1","event":"open"}\n']));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+
+		const set = await callTool(harness, { action: "set", topic: "agent-topic", minPriority: 3 });
+		expect(set.isError).toBe(false);
+		expect(set.text).toContain("agent-topic");
+		await waitFor(() => fetchMock.mock.calls.length > 0);
+
+		const get = await callTool(harness, { action: "get" });
+		expect(get.text).toContain('"topic": "agent-topic"');
+		expect(get.text).toContain('"minPriority": 3');
+		expect(get.text).toContain('"connected"');
+	});
+
+	it("never returns the token in clear text from the tool", async () => {
+		process.env["PI_NTFY_TOPIC"] = "demo";
+		process.env["PI_NTFY_TOKEN"] = "agent-must-not-see-this";
+		vi.stubGlobal("fetch", vi.fn(async () => streamResponse([])));
+
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+
+		const result = await callTool(harness, { action: "get" });
+		expect(result.text).not.toContain("agent-must-not-see-this");
+		expect(result.text).toContain('"token": "set"');
+	});
+
+	it("tells the agent off when it enables without a topic", async () => {
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+
+		const result = await callTool(harness, { action: "set", enabled: true });
+
+		expect(result.isError).toBe(true);
+		expect(result.text).toContain("topic");
+		// Nothing usable was written.
+		expect(fs.existsSync(configPath())).toBe(false);
+	});
+
+	it("rejects a set call with no fields", async () => {
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+
+		const result = await callTool(harness, { action: "set" });
+		expect(result.isError).toBe(true);
+		expect(result.text).toContain("Nothing to set");
+	});
+
+	it("picks up a config file written by an earlier session", async () => {
+		fs.writeFileSync(configPath(), JSON.stringify({ topic: "from-file", enabled: true }));
+		const fetchMock = vi.fn(async (_url: string) => streamResponse(['{"id":"1","event":"open"}\n']));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+
+		await waitFor(() => fetchMock.mock.calls.length > 0);
+		expect(String(fetchMock.mock.calls[0]?.[0])).toContain("from-file");
+	});
+
+	it("stays silent when the config file disables it", async () => {
+		fs.writeFileSync(configPath(), JSON.stringify({ topic: "demo", enabled: false }));
+		const fetchMock = vi.fn(async () => streamResponse([]));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+
+		expect(harness.notifications).toEqual([]);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("ignores a corrupt config file without breaking the session", async () => {
+		fs.writeFileSync(configPath(), "{ not json");
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+
+		// Same as unconfigured: quiet, but the tool still works and can repair the file.
+		expect(harness.notifications).toEqual([]);
+
+		const set = await callTool(harness, { action: "set", topic: "recovered" });
+		expect(set.isError).toBe(false);
+		expect(JSON.parse(fs.readFileSync(configPath(), "utf8"))).toMatchObject({ topic: "recovered" });
+	});
+
+	it("a corrupt config file is discoverable on demand, not by nagging", async () => {
+		fs.writeFileSync(configPath(), "{ not json");
+
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await startSession(harness);
+
+		// Starting up says nothing...
+		expect(harness.notifications).toEqual([]);
+
+		// ...but asking reports why the file was ignored.
+		await harness.commands.get("ntfy")?.handler("", harness.ctx);
+		expect(harness.notifications.at(-1)?.text).toContain("config file error");
+
+		const get = await callTool(harness, { action: "get" });
+		expect(get.text).toContain("configFileError");
+		expect(get.text).toContain("not valid JSON");
+	});
+});

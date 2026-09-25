@@ -1,8 +1,8 @@
 {
   "name": "@4ier/pi-ntfy",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
-  "description": "pi extension: subscribe to an ntfy topic and turn incoming notifications into agent turns (the inbound half of pi <-> ntfy)",
+  "description": "pi extension: subscribe to an ntfy topic and turn incoming notifications into agent turns (the inbound half of pi <-> ntfy), configurable on demand from inside a session",
   "license": "MIT",
   "author": "4ier",
   "repository": {

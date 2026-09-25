@@ -95,21 +95,65 @@ GET {server}/{topic}/json?since=none
 
 ## 5. Configuration
 
-All via environment variables (document them all in the README):
+### 5.1 Sources and precedence
 
-| Variable | Required | Default | Meaning |
+```text
+PI_NTFY_* env vars   >   ~/.pi/agent/pi-ntfy.json   >   built-in defaults
+```
+
+Added in 0.2.0. The environment alone was not enough: it can only be set *before* pi starts,
+but the interesting case is a **running** session deciding — or an agent being asked — to open
+an inbound alert channel. A file is the only place a running process can persist that decision,
+so the file is the lower-priority source and the env stays the escape hatch for one-off and CI
+runs.
+
+`parseConfig` stays a pure function: the file is read and mapped to the same `PI_NTFY_*` shape
+by `configFile.ts` before parsing, so validation, warnings and defaults live in exactly one
+place. Merging is `{ ...fileEnv, ...env }` with undefined env entries stripped first —
+`process.env` is full of undefined-valued keys and a naive spread would erase every file value.
+
+### 5.2 The two "not running" states
+
+They are different and must not be conflated:
+
+| State | `configured` | `enabled` | Surfaced how |
 |---|---|---|---|
-| `PI_NTFY_TOPIC` | **yes** | — | ntfy topic to subscribe to. If unset, the extension loads in a disabled state and says so via `ctx.ui.notify` — it must not error. |
-| `PI_NTFY_SERVER` | no | `https://ntfy.sh` | Base URL of the ntfy server |
-| `PI_NTFY_TOKEN` | no | — | Bearer token for protected topics (subscribe and publish) |
-| `PI_NTFY_MIN_PRIORITY` | no | `1` | Ignore messages below this priority (1–5) |
-| `PI_NTFY_TAG_ALLOW` | no | — | Comma-separated tag allowlist; if set, only messages carrying one of these tags are delivered |
-| `PI_NTFY_IDLE_DELIVERY` | no | `user` | `user` → `sendUserMessage`; `custom` → `sendMessage` with `customType: "ntfy"` |
-| `PI_NTFY_STREAMING_DELIVERY` | no | `steer` | `steer` or `followUp` when the agent is busy |
-| `PI_NTFY_MAX_RETRIES` | no | unlimited | Give up reconnecting after N failures (for tests) |
-| `PI_NTFY_PROMPT_TEMPLATE` | no | see below | Template for the injected text. Placeholders: `{{title}}`, `{{message}}`, `{{topic}}`, `{{priority}}`, `{{tags}}`, `{{time}}`, `{{id}}`, `{{click}}` |
-| `PI_NTFY_STATE_FILE` | no | `~/.pi/agent/ntfy-state.json` | Where processed message ids are persisted |
-| `PI_NTFY_QUIET` | no | — | `1` → don't emit UI notifications for connection state changes |
+| Nobody asked for alerts | `false` | `false` | `reason`, at **debug** level. No warning, no notify, no footer entry, no request. |
+| Asked for, but broken (bad topic shape, bad server URL) | `true` | `false` | `errors[]` → warn + notify. |
+| Explicitly disabled (`"enabled": false`) | `true` | `false` | debug only. |
+
+The first row is the 0.2.0 fix: an unconfigured extension used to warn in every single session.
+
+### 5.3 Variables
+
+| Variable | Config file key | Required | Default | Meaning |
+|---|---|---|---|---|
+| `PI_NTFY_TOPIC` | `topic` | **yes** | — | ntfy topic to subscribe to (1–64 chars of `A-Za-z0-9_-`) |
+| `PI_NTFY_SERVER` | `server` | no | `https://ntfy.sh` | Base URL of the ntfy server |
+| `PI_NTFY_TOKEN` | `token` | no | — | Bearer token for protected topics (subscribe and publish) |
+| `PI_NTFY_MIN_PRIORITY` | `minPriority` | no | `1` | Ignore messages below this priority (1–5) |
+| `PI_NTFY_TAG_ALLOW` | `tagAllow` | no | — | Tag allowlist (env: comma-separated; file: array); only messages carrying one of these tags are delivered |
+| `PI_NTFY_IDLE_DELIVERY` | `idleDelivery` | no | `user` | `user` → `sendUserMessage`; `custom` → `sendMessage` with `customType: "ntfy"` |
+| `PI_NTFY_STREAMING_DELIVERY` | `streamingDelivery` | no | `steer` | `steer` or `followUp` when the agent is busy |
+| `PI_NTFY_MAX_RETRIES` | `maxRetries` | no | unlimited | Give up reconnecting after N retries (for tests) |
+| `PI_NTFY_PROMPT_TEMPLATE` | `promptTemplate` | no | see below | Template for the injected text. Placeholders: `{{title}}`, `{{message}}`, `{{topic}}`, `{{priority}}`, `{{tags}}`, `{{time}}`, `{{id}}`, `{{click}}` |
+| `PI_NTFY_STATE_FILE` | `stateFile` | no | `~/.pi/agent/ntfy-state.json` | Where processed message ids are persisted |
+| `PI_NTFY_QUIET` | `quiet` | no | — | `1` → don't emit UI notifications for connection state changes |
+| `PI_NTFY_CONFIG_FILE` | — | no | `~/.pi/agent/pi-ntfy.json` | Where the config file lives |
+
+The config file additionally accepts `enabled` (boolean).
+
+### 5.4 File handling rules
+
+- **Nothing throws.** Missing file, bad JSON, wrong root type, wrong field type — all degrade to
+  "unconfigured" with an `error` string the caller may log. A broken file must never be worse
+  than no file.
+- **`$VAR` / `${VAR}` expansion is whole-value only.** Partial substitution would silently rewrite
+  a `promptTemplate` that happens to contain `$`; an unreplaced reference is left verbatim so the
+  mistake is visible.
+- **Writes are atomic** (temp + rename) and merge into whatever is already there, preserving keys
+  the extension does not know about. Mode `0600`, since the file may hold a token.
+- **An unreadable-but-present file is never clobbered** — the write refuses and reports why.
 
 Default template:
 ```
@@ -163,11 +207,35 @@ headers arrive, which is why a plain connection error still escalates.
 
 ### 6.5 `/ntfy` command
 ```
-/ntfy                 → print status: topic, server, connected?, delivered count, last error
-/ntfy test [message]  → publish a test message to the topic (proves the round trip)
-/ntfy reconnect       → drop the current stream and reconnect now
-/ntfy ids             → print how many ids are remembered
+/ntfy                    → status (or a machine-readable snapshot when no session is active)
+/ntfy enable <topic>     → configure + persist + start listening now
+/ntfy disable            → stop listening + persist enabled:false
+/ntfy set <key> <value>  → change one setting, persist, re-apply
+/ntfy reload             → re-read the config file and restart the subscription
+/ntfy test [message]     → publish a test message to the topic (proves the round trip)
+/ntfy reconnect          → drop the current stream and reconnect now
+/ntfy ids                → print how many ids are remembered
 ```
+
+### 6.6 Runtime reconfiguration
+
+`applyConfig()` is the single path that turns a config into a live subscription: it stops the
+current subscriber, re-resolves both sources, then starts again only if the new config says so.
+Every entry point (`/ntfy enable|disable|set|reload`, `ntfy_configure`, `session_start`) goes
+through it, so there is no second code path that can leave the subscriber out of sync with the
+config.
+
+That is also what makes the agent-facing tool possible. An agent cannot type a slash command, so
+`ntfy_configure` exists to expose the same operations as a normal tool:
+
+| Tool call | Effect |
+|---|---|
+| `{ "action": "get" }` | Effective config + connection state. The token is reported as `set`/`unset`, never in clear text — this string lands in the model's context and the transcript. |
+| `{ "action": "set", "topic": "..." }` | Persist + apply live |
+| `{ "action": "set", "enabled": true }` with no topic anywhere | Error: there is nothing to listen to |
+
+It is registered at **extension load**, not inside `session_start`, so it is available in exactly
+the session that needs it most: one that started with nothing configured.
 
 ---
 
@@ -181,10 +249,12 @@ pi-ntfy/
   LICENSE               # MIT, author 4ier
   CHANGELOG.md
   .gitignore
-  .github/workflows/ci.yml   # node 22: typecheck + test
+  .github/workflows/ci.yml   # node 22/24: typecheck + test + tarball contents
+  .github/workflows/publish.yml  # tag-triggered npm publish with provenance
   src/
-    index.ts            # extension entry (default export factory)
-    config.ts           # env parsing + defaults + validation
+    index.ts            # extension entry: session wiring, commands, ntfy_configure tool
+    config.ts           # env+file merge, defaults, validation
+    configFile.ts       # the on-disk config file (path, read, write, $VAR, masking)
     ntfy.ts             # subscribe stream, publish helper, pure message parsing
     filter.ts           # the filter pipeline (pure)
     template.ts         # {{placeholder}} rendering (pure)
@@ -194,15 +264,18 @@ pi-ntfy/
     filter.test.ts
     template.test.ts
     config.test.ts
+    configFile.test.ts
     state.test.ts
     ntfy-parse.test.ts
+    index.smoke.test.ts # drives the real entry via a stub pi API + stub fetch
+    loader.test.ts      # loads the entry through jiti, the loader pi actually uses
 ```
 
 `package.json` essentials:
 ```json
 {
   "name": "pi-ntfy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "pi extension: subscribe to an ntfy topic and turn notifications into agent turns",
   "license": "MIT",
