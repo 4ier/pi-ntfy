@@ -131,10 +131,13 @@ what to do from the message alone (include topic, priority and tags when present
 
 ### 6.2 Subscriber loop
 - Connect with `fetch`, read the body as a stream, split on `\n`, `JSON.parse` each non-empty line.
-- `event: "open"` → status `ntfy: connected`, reset backoff.
+- `event: "open"` → status `ntfy: connected`.
 - `event: "keepalive"` → ignore.
 - `event: "message"` → run the filter pipeline, then deliver.
-- On any error / stream end → exponential backoff (1s, 2s, 4s … cap 60s, with jitter),
+- On any error / stream end → exponential backoff (equal jitter, so the first step is
+  0.5-1s; doubling to a 60s cap). The attempt counter is reset only once a stream has stayed
+  open for `stableStreamMs` (default 30s) — resetting on the response headers instead lets a
+  server that accepts and immediately closes retry at a fixed interval forever.
   status `ntfy: reconnecting in Ns`, then reconnect. Log failures to stderr at most once per
   backoff step (do not spam).
 
@@ -142,7 +145,9 @@ what to do from the message alone (include topic, priority and tags when present
 1. drop if `event !== "message"`
 2. drop if `priority < PI_NTFY_MIN_PRIORITY`
 3. drop if `PI_NTFY_TAG_ALLOW` is set and the message's tags don't intersect it
-4. drop if the message `id` was already processed (persisted set, capped at the most recent
+4. drop if the message has no `id` (it cannot be de-duplicated, so it would be re-delivered
+   on every reconnect) — added during implementation
+5. drop if the message `id` was already processed (persisted set, capped at the most recent
    500 ids)
 5. otherwise: mark processed (persist) → render the prompt → deliver
 

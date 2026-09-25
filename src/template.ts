@@ -10,7 +10,7 @@
  *    a model, not a browser
  */
 
-import { MAX_BODY_CHARS } from "./config.js";
+import { MAX_BODY_CHARS, MAX_META_CHARS, MAX_TITLE_CHARS } from "./config.js";
 import type { NtfyMessage } from "./ntfy.js";
 
 const PLACEHOLDER_RE = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g;
@@ -59,11 +59,14 @@ export function buildTemplateVars(msg: NtfyMessage): Record<string, string> {
 	return {
 		id: msg.id,
 		topic: msg.topic,
-		title: msg.title,
+		// Every interpolated value is clamped. Only clamping the body would leave a
+		// multi-megabyte title (or tag list, or click URL) as a free path into the
+		// context window.
+		title: truncate(msg.title, MAX_TITLE_CHARS),
 		message: truncate(msg.message, MAX_BODY_CHARS),
 		priority: String(msg.priority),
-		tags: msg.tags.join(","),
+		tags: truncate(msg.tags.join(","), MAX_META_CHARS),
 		time: formatTime(msg.time),
-		click: msg.click ?? "",
+		click: truncate(msg.click ?? "", MAX_META_CHARS),
 	};
 }

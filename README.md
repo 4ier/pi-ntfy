@@ -65,7 +65,7 @@ Everything is environment variables. Nothing is written to the repo.
 | `PI_NTFY_TAG_ALLOW` | no | — | Comma-separated tag allowlist. When set, only messages carrying one of these tags are delivered. |
 | `PI_NTFY_IDLE_DELIVERY` | no | `user` | `user` → a normal user message; `custom` → an extension-authored message (`customType: "ntfy"`). |
 | `PI_NTFY_STREAMING_DELIVERY` | no | `steer` | `steer` or `followUp` when the agent is mid-turn. |
-| `PI_NTFY_MAX_RETRIES` | no | unlimited | Give up reconnecting after N consecutive failures. `0` = never retry. |
+| `PI_NTFY_MAX_RETRIES` | no | unlimited | Number of reconnect **retries** allowed after a failed connection before giving up (`0` = never retry at all). |
 | `PI_NTFY_PROMPT_TEMPLATE` | no | see below | Template for the injected text. |
 | `PI_NTFY_STATE_FILE` | no | `~/.pi/agent/ntfy-state.json` | Where processed message ids are remembered. `~` is expanded. |
 | `PI_NTFY_QUIET` | no | — | `1`/`true`/`yes`/`on` → suppress UI notifications for connection state changes. |
@@ -103,7 +103,10 @@ Investigate, then fix it. If you cannot fix it automatically, explain why and st
 ## Behaviour
 
 - **Idle** → the message starts a new turn.
-- **Mid-turn** → delivered as `steer` (default) or `followUp`, so it never kills work in flight.
+- **Busy** → delivered as `steer` (default) or `followUp`, so it never kills work in flight.
+  Note `ctx.isIdle()` is also false while a compaction is running; in that window pi runs the
+  alert as a new turn instead of queueing it, so "never kills work in flight" is not a perfect
+  description of the compaction case.
 - **Reconnects** use exponential backoff with jitter (1s → 60s), and report status in the footer.
 - **No replay storms**: the stream subscribes with `since=none`, and message ids are
   de-duplicated across reconnects *and* process restarts (persisted, capped at the 500 most
@@ -119,8 +122,10 @@ Treat the topic name as a capability:
 - Use a **long, unguessable** topic name. Public ntfy topics are readable by anyone who knows
   the name, and messages are not end-to-end encrypted.
 - Prefer a **protected topic** on a server you control, with `PI_NTFY_TOKEN` set.
-- `PI_NTFY_TAG_ALLOW` doubles as a **shared-secret filter**: publish with a secret tag and
-  require it. Messages without the tag are dropped before they reach the model.
+- `PI_NTFY_TAG_ALLOW` is a **noise gate, not a secret.** The tag travels in the payload of the
+  very topic you are subscribed to, so anyone able to read the stream learns it from the first
+  tagged message and can then replay it. It filters blind publishers and unrelated traffic; it
+  does not authenticate anyone. Use a protected topic + `PI_NTFY_TOKEN` for that.
 - `PI_NTFY_MIN_PRIORITY` gives you a crude but effective noise gate.
 - Review what your `PI_NTFY_PROMPT_TEMPLATE` asks the agent to do. This extension's whole
   purpose is to let remote input trigger agent actions — scope that deliberately.
@@ -136,9 +141,16 @@ Treat the topic name as a capability:
 - **`/ntfy test` echoes back to itself.** The test message is published to the topic, so the
   subscription receives it and starts a turn. That is usually a feature (it proves the round trip),
   but if you don't want it, tag test messages and exclude them with `PI_NTFY_TAG_ALLOW`.
-- **Message bodies are truncated** to 4000 characters before injection, so one huge alert
-  cannot blow up the context window.
+- **Long fields are truncated before injection** — body to 4000 chars, title/tags/click to
+  500 each — so one huge alert cannot blow up the context window.
 - Messages without an id, or non-`message` events (`open`, `keepalive`), are dropped.
+- **The default state file is global, not per topic or per session.** Two pi sessions on the
+  same topic share `$HOME/.pi/agent/ntfy-state.json` and the last writer wins, so their dedupe
+  sets can clobber each other; switching `PI_NTFY_TOPIC` also carries the old topic's ids over.
+  Harmless in practice (`since=none` is the real protection, and cross-process dedupe is not
+  claimed), but set `PI_NTFY_STATE_FILE` per topic if you run several.
+- `PI_NTFY_STATE_FILE=~` expands to your home **directory**, which cannot be written; the
+  extension logs a warning and falls back to the default file.
 
 ## Development
 

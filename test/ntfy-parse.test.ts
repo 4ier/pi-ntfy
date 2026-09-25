@@ -322,6 +322,55 @@ describe("subscribe", () => {
 		expect(stats.gaveUp).toBe(false);
 	});
 
+	it("escalates the backoff when the server accepts then immediately ends the stream", async () => {
+		// Regression: the backoff used to be reset as soon as the response headers
+		// arrived, so "connect OK, close at once" retried at a flat ~0.5s forever
+		// and never escalated towards backoffMaxMs.
+		const delays: number[] = [];
+		const controller = new AbortController();
+		const stats = await subscribe({
+			server: "https://ntfy.sh",
+			topic: "demo",
+			signal: controller.signal,
+			onMessage: () => undefined,
+			fetchImpl: (async () => okResponse([])) as typeof fetch,
+			sleep: async (ms) => {
+				delays.push(ms);
+				if (delays.length >= 3) {
+					controller.abort();
+				}
+			},
+			random: () => 0,
+			backoffBaseMs: 1000,
+			backoffMaxMs: 60_000,
+		});
+		expect(delays).toEqual([500, 1000, 2000]);
+		expect(stats.failures).toBe(3);
+	});
+
+	it("resets the backoff once a stream has proven stable", async () => {
+		const delays: number[] = [];
+		const controller = new AbortController();
+		await subscribe({
+			server: "https://ntfy.sh",
+			topic: "demo",
+			signal: controller.signal,
+			onMessage: () => undefined,
+			// every ended stream counts as stable, so each retry restarts at the base delay
+			stableStreamMs: 0,
+			fetchImpl: (async () => okResponse([])) as typeof fetch,
+			sleep: async (ms) => {
+				delays.push(ms);
+				if (delays.length >= 3) {
+					controller.abort();
+				}
+			},
+			random: () => 0,
+			backoffBaseMs: 1000,
+		});
+		expect(delays).toEqual([500, 500, 500]);
+	});
+
 	it("treats a non-2xx response as a failure", async () => {
 		const errors: Array<{ attempt: number; delay: number }> = [];
 		const stats = await subscribe({

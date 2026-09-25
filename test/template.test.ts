@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { MAX_BODY_CHARS } from "../src/config.js";
+import { MAX_BODY_CHARS, MAX_META_CHARS, MAX_TITLE_CHARS } from "../src/config.js";
 import type { NtfyMessage } from "../src/ntfy.js";
 import { buildTemplateVars, renderTemplate, truncate } from "../src/template.js";
 
@@ -116,6 +116,19 @@ describe("buildTemplateVars", () => {
 		const vars = buildTemplateVars(message({ message: huge }));
 		expect(vars["message"]?.length).toBeLessThan(huge.length);
 		expect(vars["message"]).toContain("chars truncated");
+	});
+
+	it("truncates an oversized title, tag list and click URL", () => {
+		// Regression: only the body was clamped, so a multi-megabyte title (or tag
+		// list, or click URL) was a free path into the context window.
+		const huge = "x".repeat(50_000);
+		const vars = buildTemplateVars(
+			message({ title: huge, tags: Array.from({ length: 5000 }, () => "tag"), click: huge }),
+		);
+		expect(vars["title"]?.length).toBeLessThan(MAX_TITLE_CHARS + 100);
+		expect(vars["title"]).toContain("chars truncated");
+		expect(vars["tags"]?.length).toBeLessThanOrEqual(MAX_META_CHARS + 100);
+		expect(vars["click"]?.length).toBeLessThanOrEqual(MAX_META_CHARS + 100);
 	});
 
 	it("renders a zero timestamp as an empty string", () => {

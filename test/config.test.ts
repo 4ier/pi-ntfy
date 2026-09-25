@@ -208,8 +208,12 @@ describe("parseConfig — state file", () => {
 		expect(withTopic({ PI_NTFY_STATE_FILE: "~/x/y.json" }).stateFile).toBe(path.join(HOME, "x/y.json"));
 	});
 
-	it("expands a bare tilde", () => {
-		expect(withTopic({ PI_NTFY_STATE_FILE: "~" }).stateFile).toBe(HOME);
+	it("falls back to the default file for a bare tilde", () => {
+		// A bare `~` expands to the home *directory*, which can never be written as a
+		// state file. It used to be accepted silently, configuring a guaranteed no-op.
+		const result = withTopic({ PI_NTFY_STATE_FILE: "~" });
+		expect(result.stateFile).toBe(path.join(HOME, ".pi", "agent", "ntfy-state.json"));
+		expect(result.warnings.join(" ")).toContain("resolves to a directory");
 	});
 
 	it("keeps an absolute path", () => {

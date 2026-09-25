@@ -190,13 +190,7 @@ function deliver(current: Runtime, text: string, message: NtfyMessage): void {
 	try {
 		if (ctx.isIdle()) {
 			if (config.idleDelivery === "user") {
-				try {
-					piSendUserMessage(text);
-				} catch (error) {
-					// the agent may have become busy between isIdle() and the call
-					logger.debug(`sendUserMessage raced with streaming (${describeError(error)}); steering instead`);
-					piSendCustom(custom, config.streamingDelivery);
-				}
+				piSendUserMessage(text, config.streamingDelivery);
 			} else {
 				piSendCustom(custom, undefined);
 			}
@@ -223,11 +217,18 @@ type CustomMessage = {
 	details: Record<string, unknown>;
 };
 
-function piSendUserMessage(text: string): void {
+function piSendUserMessage(text: string, deliverAs: "steer" | "followUp" | undefined): void {
 	if (activePi === undefined) {
 		throw new Error("pi API not initialised");
 	}
-	activePi.sendUserMessage(text);
+	// `deliverAs` is always passed, even when the agent looks idle. pi's extension
+	// action never throws synchronously (it attaches its own .catch), so a
+	// try/catch around it cannot observe the "agent became busy between the
+	// isIdle() check and the call" race — the previous fallback branch was dead
+	// code. Passing `deliverAs` removes the race at the source: when idle, pi
+	// ignores it and runs the prompt immediately; when the race is lost, the
+	// message is queued as steer/followUp instead of being rejected.
+	activePi.sendUserMessage(text, deliverAs === undefined ? undefined : { deliverAs });
 }
 
 function piSendCustom(message: CustomMessage, deliverAs: "steer" | "followUp" | undefined): void {

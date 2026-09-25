@@ -178,12 +178,20 @@ export interface SubscribeOptions {
 	onMessage: (message: NtfyMessage) => void;
 	onOpen?: (() => void) | undefined;
 	onError?: ((error: unknown, attempt: number, delayMs: number) => void) | undefined;
-	/** null = retry forever, 0 = never retry. */
+	/** null = retry forever, N = allow N retries before giving up, 0 = never retry. */
 	maxRetries?: number | null;
 	fetchImpl?: typeof fetch | undefined;
 	backoffBaseMs?: number | undefined;
 	backoffMaxMs?: number | undefined;
+	/**
+	 * A stream must stay open at least this long before it counts as a real
+	 * connection and resets the backoff. Without it, a server or proxy that
+	 * accepts the request and closes immediately would reset the backoff on every
+	 * response and retry at a fixed sub-second interval forever.
+	 */
+	stableStreamMs?: number | undefined;
 	random?: (() => number) | undefined;
+	now?: (() => number) | undefined;
 	sleep?: ((ms: number, signal: AbortSignal) => Promise<void>) | undefined;
 }
 
@@ -261,7 +269,9 @@ export async function subscribe(options: SubscribeOptions): Promise<SubscribeSta
 		fetchImpl = globalThis.fetch,
 		backoffBaseMs = 1000,
 		backoffMaxMs = 60_000,
+		stableStreamMs = 30_000,
 		random = Math.random,
+		now = Date.now,
 		sleep = defaultSleep,
 	} = options;
 
@@ -290,8 +300,15 @@ export async function subscribe(options: SubscribeOptions): Promise<SubscribeSta
 			if (!response.ok) {
 				throw new Error(`ntfy returned HTTP ${response.status}`);
 			}
-			attempt = 0;
+			const connectedAt = now();
 			await readStream(response, dispatch);
+			// Only a stream that actually lived for a while proves the endpoint is
+			// healthy. Resetting on the response headers alone (the previous
+			// behaviour) meant "connect OK then close at once" retried forever at
+			// ~2 req/s and never escalated towards backoffMaxMs.
+			if (now() - connectedAt >= stableStreamMs) {
+				attempt = 0;
+			}
 			throw new Error("ntfy stream ended");
 		} catch (error) {
 			if (signal.aborted) {

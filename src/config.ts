@@ -18,6 +18,10 @@ export const DEFAULT_STATE_FILE = path.join(".pi", "agent", "ntfy-state.json");
 export const DEFAULT_ID_CAP = 500;
 /** Bodies longer than this are truncated before being injected into the conversation. */
 export const MAX_BODY_CHARS = 4000;
+/** Titles longer than this are truncated before being injected into the conversation. */
+export const MAX_TITLE_CHARS = 500;
+/** Tags/click URLs longer than this are truncated before being injected. */
+export const MAX_META_CHARS = 500;
 
 /** ntfy topic names: 1..64 chars of [A-Za-z0-9_-]. */
 const TOPIC_RE = /^[-_A-Za-z0-9]{1,64}$/;
@@ -187,7 +191,10 @@ export function parseConfig({ env, homeDir }: ParseConfigOptions): NtfyConfig {
 	if (rawStateFile === undefined) {
 		stateFile = path.join(homeDir, DEFAULT_STATE_FILE);
 	} else if (rawStateFile === "~") {
-		stateFile = homeDir;
+		// A bare `~` expands to the home *directory*, which can never be written as a
+		// file. Fall back instead of silently configuring a guaranteed no-op.
+		warnings.push("PI_NTFY_STATE_FILE=~ resolves to a directory; using the default file");
+		stateFile = path.join(homeDir, DEFAULT_STATE_FILE);
 	} else if (rawStateFile.startsWith("~/")) {
 		stateFile = path.join(homeDir, rawStateFile.slice(2));
 	} else {
