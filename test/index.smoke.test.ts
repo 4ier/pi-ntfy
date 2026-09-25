@@ -44,6 +44,7 @@ const ENV_KEYS = [
 	"PI_NTFY_PROMPT_TEMPLATE",
 	"PI_NTFY_STATE_FILE",
 	"PI_NTFY_QUIET",
+	"PI_NTFY_CONFIG_FILE",
 ] as const;
 
 interface Harness {
@@ -53,6 +54,7 @@ interface Harness {
 	sent: Array<{ message: unknown; options: unknown }>;
 	/** Both arguments are kept: dropping `options` made a P2-A regression invisible. */
 	userMessages: Array<{ text: string; options: unknown }>;
+	tools: Map<string, { description?: string; execute: (...args: unknown[]) => Promise<unknown> }>;
 	notifications: Array<{ text: string; level: string }>;
 	statuses: Array<[string, string | undefined]>;
 	ctx: unknown;
@@ -68,6 +70,7 @@ function makeHarness(): Harness {
 	const userMessages: Array<{ text: string; options: unknown }> = [];
 	const notifications: Array<{ text: string; level: string }> = [];
 	const statuses: Array<[string, string | undefined]> = [];
+	const tools = new Map<string, { description?: string; execute: (...args: unknown[]) => Promise<unknown> }>();
 
 	const ctx = {
 		cwd: process.cwd(),
@@ -101,11 +104,16 @@ function makeHarness(): Harness {
 		sendUserMessage: (text: string, options?: unknown) => {
 			userMessages.push({ text, options });
 		},
+		registerTool: (
+			definition: { name: string; execute: (...args: unknown[]) => Promise<unknown> },
+		) => {
+			tools.set(definition.name, definition);
+		},
 		appendEntry: () => undefined,
 		events: { on: () => undefined, emit: () => undefined },
 	} as unknown as ExtensionAPI;
 
-	return { api, handlers, commands, sent, userMessages, notifications, statuses, ctx };
+	return { api, handlers, commands, sent, userMessages, tools, notifications, statuses, ctx };
 }
 
 function streamResponse(lines: string[]): Response {
@@ -144,6 +152,9 @@ beforeEach(() => {
 		delete process.env[key];
 	}
 	process.env["PI_NTFY_STATE_FILE"] = path.join(tmpDir, "state.json");
+	// Point the config file at a path inside the temp dir. Without this the suite would read
+	// the developer's real ~/.pi/agent/pi-ntfy.json and pass or fail depending on their machine.
+	process.env["PI_NTFY_CONFIG_FILE"] = path.join(tmpDir, "pi-ntfy.json");
 });
 
 afterEach(async () => {
@@ -180,22 +191,33 @@ describe("extension entry", () => {
 		expect(typeof (await loadExtension())).toBe("function");
 	});
 
-	it("loads in a disabled state when PI_NTFY_TOPIC is unset", async () => {
+	it("stays completely silent when nothing is configured", async () => {
+		// Regression for the reported annoyance: an unconfigured extension used to warn in
+		// every session ("Warning: pi-ntfy disabled: PI_NTFY_TOPIC is not set"). Not every
+		// session wants an inbound alert channel, so this state must be invisible.
 		const harness = makeHarness();
+		const fetchMock = vi.fn(async () => streamResponse([]));
+		vi.stubGlobal("fetch", fetchMock);
+
 		(await loadExtension())(harness.api);
 		liveHarnesses.push(harness);
 		await startSession(harness);
 
-		expect(harness.notifications.some((n) => n.text.includes("disabled"))).toBe(true);
-		expect(harness.statuses).toContainEqual(["ntfy", "ntfy: disabled"]);
+		expect(harness.notifications).toEqual([]);
+		// Clearing the footer is allowed (it leaves no visible entry); *setting* one is not.
+		expect(harness.statuses.every(([, value]) => value === undefined)).toBe(true);
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
-	it("registers exactly one /ntfy command", async () => {
+	it("registers one /ntfy command and the self-configuration tool", async () => {
 		const harness = makeHarness();
 		(await loadExtension())(harness.api);
 		liveHarnesses.push(harness);
 		expect([...harness.commands.keys()]).toEqual(["ntfy"]);
 		expect(harness.commands.get("ntfy")?.description).toContain("pi-ntfy");
+		// The tool must exist even in a session that started unconfigured: it is how the
+		// agent turns alerts on for itself.
+		expect([...harness.tools.keys()]).toEqual(["ntfy_configure"]);
 	});
 
 	it("delivers an ntfy message as a user turn when idle", async () => {
@@ -408,13 +430,31 @@ describe("extension entry", () => {
 		expect(last?.text).toContain("HTTP 403");
 	});
 
-	it("says so when the command runs before a session starts", async () => {
+	it("reports the effective configuration when asked before a session starts", async () => {
 		const harness = makeHarness();
 		(await loadExtension())(harness.api);
 		liveHarnesses.push(harness);
 		await harness.commands.get("ntfy")?.handler("", harness.ctx);
 
-		expect(harness.notifications.at(-1)?.text).toContain("not running");
+		const text = harness.notifications.at(-1)?.text ?? "";
+		// The snapshot is machine-readable so an agent can read it back.
+		expect(text).toContain("\"configured\": false");
+		expect(text).toContain("configFile");
+	});
+
+	it("never leaks the token in the status snapshot", async () => {
+		process.env["PI_NTFY_TOPIC"] = "demo";
+		process.env["PI_NTFY_TOKEN"] = "super-secret-value";
+
+		const harness = makeHarness();
+		(await loadExtension())(harness.api);
+		liveHarnesses.push(harness);
+		await harness.commands.get("ntfy")?.handler("", harness.ctx);
+
+		const text = harness.notifications.at(-1)?.text ?? "";
+		expect(text).not.toContain("super-secret-value");
+		// The snapshot only ever says whether a token exists.
+		expect(text).toContain("\"token\": \"set\"");
 	});
 
 	it("shuts the subscriber down and reports stopped status", async () => {
@@ -428,7 +468,8 @@ describe("extension entry", () => {
 		await waitFor(() => harness.statuses.some(([, value]) => value === "ntfy: connected"));
 
 		await harness.handlers.get("session_shutdown")?.({}, harness.ctx);
-		expect(harness.statuses).toContainEqual(["ntfy", "ntfy: stopped"]);
+		// Shutdown clears the footer rather than leaving a stale "stopped" entry behind.
+		expect(harness.statuses.at(-1)).toEqual(["ntfy", undefined]);
 	});
 
 	it("never throws out of session_start when the state file is unwritable", async () => {

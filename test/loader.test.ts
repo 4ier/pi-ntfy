@@ -64,15 +64,17 @@ describe("jiti loads the extension entry the way pi does", () => {
 		}
 	});
 
-	it("the factory registers exactly the handlers and command the docs promise", async () => {
+	it("the factory registers exactly the handlers, command and tool the docs promise", async () => {
 		const factory = (await freshJiti().import(entry, { default: true })) as (
 			api: ExtensionAPI,
 		) => void;
 
 		const handlers = new Set<string>();
 		const commands = new Set<string>();
+		const tools = new Set<string>();
 
-		// Minimal stub: the factory only touches `on` and `registerCommand` at load time.
+		// Minimal stub: at load time the factory only touches `on`, `registerCommand`
+		// and `registerTool`.
 		const api = {
 			on: (name: string) => {
 				handlers.add(name);
@@ -80,11 +82,17 @@ describe("jiti loads the extension entry the way pi does", () => {
 			registerCommand: (name: string) => {
 				commands.add(name);
 			},
+			registerTool: (definition: { name: string }) => {
+				tools.add(definition.name);
+			},
 		} as unknown as ExtensionAPI;
 
 		factory(api);
 
 		expect([...handlers].sort()).toEqual(["session_shutdown", "session_start"]);
 		expect([...commands]).toEqual(["ntfy"]);
+		// Registered at load time so the agent can configure alerts in a session that
+		// started with nothing configured.
+		expect([...tools]).toEqual(["ntfy_configure"]);
 	});
 });

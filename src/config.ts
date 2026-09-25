@@ -29,9 +29,16 @@ const TOPIC_RE = /^[-_A-Za-z0-9]{1,64}$/;
 export type IdleDelivery = "user" | "custom";
 export type StreamingDelivery = "steer" | "followUp";
 
+/** Where the topic came from. Drives the status line and the “is this intentional?” call. */
+export type ConfigSource = "env" | "file" | "none";
+
 export interface NtfyConfig {
-	/** false when the extension cannot run (no topic / bad server). */
+	/** A topic was supplied by some source. */
+	configured: boolean;
+	/** The extension should actually subscribe: configured, not disabled, no invalid values. */
 	enabled: boolean;
+	/** Which source supplied the topic. */
+	source: ConfigSource;
 	topic: string;
 	server: string;
 	token: string | undefined;
@@ -47,15 +54,40 @@ export interface NtfyConfig {
 	quiet: boolean;
 	/** Non-fatal problems worth surfacing once. */
 	warnings: string[];
-	/** Fatal problems; `enabled` is false when non-empty. */
+	/**
+	 * Invalid values that the user explicitly set (bad topic shape, bad server URL).
+	 * These are worth telling the user about.
+	 */
 	errors: string[];
+	/**
+	 * Why the extension is inert when nothing was misconfigured — i.e. nobody asked for it.
+	 * Debug-level only: “not every session needs this”, so an unconfigured extension must
+	 * not nag on every start.
+	 */
+	reason: string | undefined;
 }
 
 export type EnvLike = Record<string, string | undefined>;
 
 export interface ParseConfigOptions {
 	env: EnvLike;
+	/**
+	 * Settings read from the config file, already mapped to `PI_NTFY_*` names
+	 * (see `configFile.ts`). Lower priority than `env`.
+	 */
+	fileEnv?: EnvLike;
 	homeDir: string;
+}
+
+/** Drop `undefined` entries so a spread cannot silently erase a file value. */
+function definedOnly(source: EnvLike | undefined): EnvLike {
+	const out: Record<string, string> = {};
+	for (const [key, value] of Object.entries(source ?? {})) {
+		if (value !== undefined) {
+			out[key] = value;
+		}
+	}
+	return out;
 }
 
 function trimmed(value: string | undefined): string | undefined {
@@ -83,17 +115,31 @@ function parseIntStrict(value: string | undefined): number | undefined {
 	return Number.isSafeInteger(n) ? n : undefined;
 }
 
-export function parseConfig({ env, homeDir }: ParseConfigOptions): NtfyConfig {
+export function parseConfig({ env: rawEnv, fileEnv, homeDir }: ParseConfigOptions): NtfyConfig {
 	const warnings: string[] = [];
 	const errors: string[] = [];
+	let reason: string | undefined;
+
+	// --- merge the two sources -------------------------------------------
+	// `process.env` is full of undefined-valued keys; spreading it directly would wipe out
+	// every value the config file contributed. env still wins where it is actually set.
+	const fromFile = definedOnly(fileEnv);
+	const fromEnv = definedOnly(rawEnv);
+	const env: EnvLike = { ...fromFile, ...fromEnv };
 
 	// --- topic (required) -------------------------------------------------
-	const topic = trimmed(env["PI_NTFY_TOPIC"]) ?? "";
-	if (topic.length === 0) {
-		errors.push("PI_NTFY_TOPIC is not set; pi-ntfy is disabled");
+	const topicFromEnv = trimmed(fromEnv["PI_NTFY_TOPIC"]);
+	const topicFromFile = trimmed(fromFile["PI_NTFY_TOPIC"]);
+	const source: ConfigSource =
+		topicFromEnv !== undefined ? "env" : topicFromFile !== undefined ? "file" : "none";
+	const topic = topicFromEnv ?? topicFromFile ?? "";
+
+	if (source === "none") {
+		// Not an error: most sessions do not want an inbound alert channel. Stay silent.
+		reason = "no topic configured (set PI_NTFY_TOPIC or use the ntfy_configure tool)";
 	} else if (!TOPIC_RE.test(topic)) {
 		errors.push(
-			`PI_NTFY_TOPIC ${JSON.stringify(topic)} is not a valid ntfy topic (expected 1-64 chars of A-Za-z0-9_-)`,
+			`topic ${JSON.stringify(topic)} is not a valid ntfy topic (expected 1-64 chars of A-Za-z0-9_-)`,
 		);
 	}
 
@@ -205,7 +251,9 @@ export function parseConfig({ env, homeDir }: ParseConfigOptions): NtfyConfig {
 	const quiet = parseBool(env["PI_NTFY_QUIET"]);
 
 	return {
-		enabled: errors.length === 0,
+		configured: source !== "none",
+		enabled: source !== "none" && errors.length === 0,
+		source,
 		topic,
 		server,
 		token,
@@ -219,5 +267,6 @@ export function parseConfig({ env, homeDir }: ParseConfigOptions): NtfyConfig {
 		quiet,
 		warnings,
 		errors,
+		reason,
 	};
 }

@@ -20,14 +20,22 @@ function withTopic(extra: EnvLike = {}) {
 }
 
 describe("parseConfig — topic", () => {
-	it("disables the extension when the topic is missing", () => {
+	it("is inert but NOT an error when no topic is configured", () => {
+		// Changed in 0.2.0: a missing topic used to land in `errors`, which made every
+		// unconfigured session print a warning. Not wanting an inbound alert channel is a
+		// normal state, so it is reported through `reason` (debug-level) instead.
 		const config = parse();
 		expect(config.enabled).toBe(false);
-		expect(config.errors.join(" ")).toContain("PI_NTFY_TOPIC is not set");
+		expect(config.configured).toBe(false);
+		expect(config.source).toBe("none");
+		expect(config.errors).toEqual([]);
+		expect(config.reason).toContain("no topic configured");
 	});
 
-	it("disables the extension when the topic is blank", () => {
-		expect(parse({ PI_NTFY_TOPIC: "   " }).enabled).toBe(false);
+	it("is inert but NOT an error when the topic is blank", () => {
+		const config = parse({ PI_NTFY_TOPIC: "   " });
+		expect(config.enabled).toBe(false);
+		expect(config.errors).toEqual([]);
 	});
 
 	it("accepts a normal topic", () => {

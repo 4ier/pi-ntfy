@@ -192,6 +192,37 @@ They are complementary and can be used together: one pokes you when a session fi
 the other wakes an agent when your infrastructure reports a problem. Their names are similar by
 design, so read the direction carefully before installing.
 
+## Releasing
+
+Publishing happens in CI, not from a laptop. The npm token lives **only** in a GitHub
+Actions secret so it never lands in a `~/.npmrc` on anyone's machine.
+
+One-time setup:
+
+```bash
+# npm token must be an *Automation* token (or a granular token with "Bypass 2FA"),
+# otherwise publish fails with EOTP — this repo's CI has no human to answer an OTP.
+gh secret set NPM_TOKEN --repo 4ier/pi-ntfy
+```
+
+Then publish by tagging:
+
+```bash
+# bump "version" in package.json + add a CHANGELOG entry first
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`.github/workflows/publish.yml` runs typecheck + tests, verifies the tarball actually
+contains the extension entry point, then publishes with
+[provenance](https://docs.npmjs.com/generating-provenance-statements) (`id-token: write`).
+There is also a manual `workflow_dispatch` trigger that defaults to a dry run.
+
+For a local one-off publish instead:
+
+```bash
+npm publish --registry https://registry.npmjs.org/ --access public --otp=<6-digit code>
+```
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
