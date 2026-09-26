@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-26
+
+### Changed
+
+- Publishing now goes through npm **Trusted Publishing (OIDC)** from GitHub Actions. No
+  npm token exists anywhere: `NODE_AUTH_TOKEN` is gone from the publish workflow and the
+  package is configured to require 2FA and disallow bypass-2FA tokens. Each release
+  exchanges the workflow identity for a short-lived credential instead.
+- This is the first release with a **provenance attestation** (0.2.0 and 0.2.1 were
+  published by hand). npm generates it automatically for OIDC publishes; the verification
+  is `npm view @4ier/pi-ntfy@0.2.2 dist.attestations`.
+
+No source changes in this release — it is deliberately a metadata-only bump so the OIDC
+path could be verified in isolation from the code.
+
 ## [0.2.1] - 2026-09-26
 
 ### Fixed
