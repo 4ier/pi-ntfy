@@ -1,9 +1,19 @@
 name: Publish
 
-# 发布走 CI，不靠本机的 ~/.npmrc：
-#   - token 只存在 GitHub Actions secret 里（NPM_TOKEN）
-#   - 只有打了 v* 标签才发，避免误发
-#   - 每次发布都带 provenance 证明（需要 id-token: write）
+# 走 npm Trusted Publishing（OIDC），**不使用任何长期 npm token**。
+#
+# npm 已经在创建 token 的页面上明确劝阻为 CI/CD 建长期写权限 token
+# （"please use Trusted Publishing instead"）：长期 token 会泄漏、会进日志、要人工轮换。
+# Trusted Publishing 每次发布用一次性的、由工作流身份签出的短期凭证。
+#
+# 前提（在 npmjs.com 的包设置页里配一次）：
+#   Trusted Publisher → GitHub Actions
+#     Organization or user : 4ier
+#     Repository           : pi-ntfy
+#     Workflow filename    : publish.yml
+#     Allowed actions      : 勾上 npm publish（默认只允许 stage publish）
+#
+# 另需 npm CLI >= 11.5.1 与 Node >= 22.14.0，下面显式升级 npm 以免依赖 Node 自带版本。
 on:
   push:
     tags: ["v*"]
@@ -16,7 +26,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write # npm provenance
+  id-token: write # OIDC：Trusted Publishing 与 provenance 都靠它
 
 jobs:
   publish:
@@ -26,11 +36,17 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Ensure an npm CLI that supports trusted publishing
+        run: |
+          npm install -g npm@latest
+          node -v
+          npm -v
+
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Typecheck
         run: npm run typecheck
@@ -55,11 +71,7 @@ jobs:
       - name: Publish (dry run)
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         run: npm publish --dry-run --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
