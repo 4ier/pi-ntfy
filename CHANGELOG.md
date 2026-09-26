@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-26
+
+### Fixed
+
+- Re-released as 0.2.1. The 0.2.0 version number is a permanent tombstone on the
+  registry (it was published and then unpublished), so npm refuses to publish it
+  again while the package itself has no downloadable versions at all. Same code as
+  0.2.0.
+
 ## [0.2.0] - 2026-09-26
 
 ### Added
