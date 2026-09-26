@@ -75,16 +75,24 @@ jobs:
           # The extension ships as TypeScript source (jiti loads it, there is no build
           # step), so a typo in `files` would make `pi install npm:@4ier/pi-ntfy`
           # install a package with no entry point while every other check stays green.
-          npm pack --dry-run --json > pack.json
+          #
+          # Read the real tarball, not `npm pack --json`: that schema is not stable
+          # across npm versions (npm 11 on CI dumped a different shape than npm 11
+          # locally), which made this check crash. `tar -tzf` is the ground truth.
+          mkdir -p /tmp/packcheck
+          npm pack --pack-destination /tmp/packcheck > /tmp/packcheck/name.txt
+          TARBALL=$(tail -n 1 /tmp/packcheck/name.txt)
+          tar -tzf "/tmp/packcheck/$TARBALL" | sed 's|^package/||' | grep -v '/$' > /tmp/packcheck/files.txt
           node -e "
-          const report = require('./pack.json');
-          const files = (report[0]?.files ?? []).map((f) => f.path);
+          const fs = require('fs');
+          const files = fs.readFileSync('/tmp/packcheck/files.txt', 'utf8').split('\n').filter(Boolean);
           const required = [
             'package.json',
             'README.md',
             'LICENSE',
             'src/index.ts',
             'src/config.ts',
+            'src/configFile.ts',
             'src/ntfy.ts',
             'src/filter.ts',
             'src/template.ts',
@@ -100,4 +108,3 @@ jobs:
           }
           console.log('pack contents ok: ' + files.length + ' files');
           "
-          rm -f pack.json

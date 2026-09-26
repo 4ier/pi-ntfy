@@ -34,10 +34,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 刻意**不传 registry-url**：那会让 setup-node 往 .npmrc 写一行
+      # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`，而 NODE_AUTH_TOKEN 默认是
+      # 占位符 `XXXXX-XXXXX-XXXXX-XXXXX`。走 OIDC 不需要任何 token，仓库根的
+      # .npmrc 已经把 registry 钉在官方源上了。
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
 
       - name: Ensure an npm CLI that supports trusted publishing
         run: |
@@ -56,17 +59,23 @@ jobs:
 
       - name: Check the tarball contains the extension
         run: |
-          npm pack --dry-run --json > pack.json
+          # 别解析 `npm pack --json`。那个 JSON 的形状在不同 npm 版本/环境下会变
+          # （同一个包：本地 npm 11.19 有 `files` 字段，CI 上我拿到的是完全不同的结构），
+          # 曾经让这一步在 CI 上直接炸掉。列 tarball 内容才是 ground truth。
+          mkdir -p /tmp/packcheck
+          npm pack --pack-destination /tmp/packcheck > /tmp/packcheck/name.txt
+          TARBALL=$(tail -n 1 /tmp/packcheck/name.txt)
+          tar -tzf "/tmp/packcheck/$TARBALL" | sed 's|^package/||' | grep -v '/$' > /tmp/packcheck/files.txt
           node -e "
-          const files = require('./pack.json')[0].files.map((f) => f.path);
+          const fs = require('fs');
+          const files = fs.readFileSync('/tmp/packcheck/files.txt', 'utf8').split('\n').filter(Boolean);
           const manifest = require('./package.json');
           for (const entry of manifest.pi?.extensions ?? []) {
             const normalized = entry.startsWith('./') ? entry.slice(2) : entry;
             if (!files.includes(normalized)) { throw new Error('pi.extensions ' + entry + ' missing from tarball'); }
           }
-          console.log('pack ok: ' + files.length + ' files');
+          console.log('pack ok: ' + files.length + ' files, entry point present');
           "
-          rm -f pack.json
 
       - name: Publish (dry run)
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
