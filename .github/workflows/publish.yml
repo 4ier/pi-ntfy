@@ -77,6 +77,24 @@ jobs:
           console.log('pack ok: ' + files.length + ' files, entry point present');
           "
 
+      - name: Diagnose OIDC availability
+        run: |
+          # ENEEDAUTH means the npm CLI never even tried OIDC, so this prints the exact
+          # preconditions npm needs. If the two ID-token vars are empty, the problem is
+          # the workflow permissions, not the npmjs.com configuration.
+          echo "node: $(node -v)"
+          echo "npm:  $(npm -v)"
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set:   ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+          echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
+          echo "NODE_AUTH_TOKEN set:                ${NODE_AUTH_TOKEN:+yes}"
+          echo "NPM_CONFIG_USERCONFIG:              ${NPM_CONFIG_USERCONFIG:-<unset>}"
+          if [ -n "$NPM_CONFIG_USERCONFIG" ] && [ -f "$NPM_CONFIG_USERCONFIG" ]; then
+            echo '--- userconfig (.npmrc) with secrets redacted ---'
+            sed -E 's/(_authToken|_auth|password)=.*/\1=<redacted>/' "$NPM_CONFIG_USERCONFIG"
+          fi
+          echo '--- effective registry ---'
+          npm config get registry
+
       - name: Publish (dry run)
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         run: npm publish --dry-run --access public
@@ -84,3 +102,10 @@ jobs:
       - name: Publish
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
         run: npm publish --provenance --access public
+
+      - name: Dump the npm debug log on failure
+        if: failure()
+        run: |
+          LOG=$(ls -t ~/.npm/_logs/*.log 2>/dev/null | head -1)
+          echo "--- $LOG (tail) ---"
+          tail -n 60 "$LOG" 2>/dev/null || echo 'no npm debug log found'
