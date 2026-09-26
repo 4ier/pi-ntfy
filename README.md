@@ -254,13 +254,6 @@ src/log.ts       stderr logger with a level gate
 test/            vitest suites, no network access required
 ```
 
-Releasing:
-
-```bash
-npm version patch
-npm publish
-```
-
 ## Related work
 
 - **[pi-ntfy](https://www.npmjs.com/package/pi-ntfy)** by [rogeecn](https://www.npmjs.com/~rogeecn) —
@@ -274,30 +267,56 @@ design, so read the direction carefully before installing.
 
 ## Releasing
 
-Publishing happens in CI, not from a laptop. The npm token lives **only** in a GitHub
-Actions secret so it never lands in a `~/.npmrc` on anyone's machine.
+Publishing happens in CI through npm **Trusted Publishing (OIDC)**. There is **no npm token
+anywhere** — not in the repo, not in GitHub secrets, not in anyone's `~/.npmrc`. Each release
+exchanges the workflow's GitHub identity for a short-lived credential, and npm attaches a
+provenance attestation automatically.
 
-One-time setup:
+One-time setup, already done for this package (verify with `npm trust list @4ier/pi-ntfy`):
 
 ```bash
-# npm token must be an *Automation* token (or a granular token with "Bypass 2FA"),
-# otherwise publish fails with EOTP — this repo's CI has no human to answer an OTP.
-gh secret set NPM_TOKEN --repo 4ier/pi-ntfy
+npm trust github @4ier/pi-ntfy --file publish.yml --repo 4ier/pi-ntfy --allow-publish -y
 ```
+
+> **`--allow-publish` matters.** npm's default is stage-only (`npm stage publish`), which makes
+every CI release wait for a human to approve it with 2FA. Without this flag the workflow stops
+working even though the configuration looks complete on the settings page.
 
 Then publish by tagging:
 
 ```bash
 # bump "version" in package.json + add a CHANGELOG entry first
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.2.2 && git push origin v0.2.2
 ```
 
-`.github/workflows/publish.yml` runs typecheck + tests, verifies the tarball actually
-contains the extension entry point, then publishes with
-[provenance](https://docs.npmjs.com/generating-provenance-statements) (`id-token: write`).
-There is also a manual `workflow_dispatch` trigger that defaults to a dry run.
+`.github/workflows/publish.yml` runs typecheck + tests, verifies the real tarball contains the
+extension entry point, then publishes. Prove it worked without trusting the workflow badge:
 
-For a local one-off publish instead:
+```bash
+curl -s https://registry.npmjs.org/@4ier%2fpi-ntfy | python3 -c \
+  "import json,sys; print(json.load(sys.stdin)['dist-tags'])"
+# {'latest': '0.2.2'}
+```
+
+### Traps worth knowing
+
+Two of these cost real debugging time on the first OIDC release, and neither was an OIDC problem:
+
+- **`package-lock.json` must not point at a mirror.** A machine whose global registry is
+  `registry.npmmirror.com` writes those hostnames into `resolved`, and CI then refuses the
+  tarballs outright with `EALLOWREMOTE`. The repo carries a project-level `.npmrc` pinning the
+  official registry so the lock cannot silently drift back on the next local install.
+- **Do not parse `npm pack --json`.** Its schema moves between npm versions: for the same
+  package, npm 11 locally returned a `files` array where CI returned something else entirely.
+  Both workflows list the tarball with `tar -tzf` instead, which is the ground truth.
+
+And when it does fail, `ENEEDAUTH` on a trusted-publishing release usually means the token
+exchange returned `404 ... package not found` — i.e. **no trusted publisher is registered for
+that package at all**, not that OIDC is broken. Check `npm trust list <package>` before touching
+the workflow. The publish job prints the OIDC preconditions and dumps the npm debug log on
+failure for exactly this reason.
+
+For a local one-off publish instead (needs a browser or a 6-digit OTP):
 
 ```bash
 npm publish --registry https://registry.npmjs.org/ --access public --otp=<6-digit code>
